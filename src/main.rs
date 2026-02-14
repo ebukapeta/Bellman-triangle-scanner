@@ -8,11 +8,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use tokio_tungstenite::connect_async;
 use std::fs::OpenOptions;
 use std::io::Write;
 use chrono::Utc;
+use tokio_tungstenite::connect_async;
 
 /* ================= CONFIG ================= */
 const TRADE_SIZE_USDT: f64 = 100.0;
@@ -192,14 +191,13 @@ async fn scan_handler(Query(params):Query<ScanParams>)->Json<Value>{ Json(run_sc
 
 /* ================= FRONTEND ================= */
 async fn ui()->Html<&'static str>{
-Html(r#"
-<!DOCTYPE html>
-<html lang="en">
+Html(r#"<!DOCTYPE html>
+<html lang='en'>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
 <title>Triangular Arbitrage Scanner</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<script src='https://cdn.tailwindcss.com'></script>
 <style>
 body { background:#0f172a; color:white; font-family:Arial,sans-serif; }
 button { padding:12px 24px; font-size:16px; margin-top:10px; }
@@ -210,25 +208,25 @@ tr:nth-child(even) { background-color: #1e293b; }
 tr:nth-child(odd) { background-color: #0f172a; }
 </style>
 </head>
-<body class="p-4">
+<body class='p-4'>
 
-<h1 class="text-2xl font-bold mb-4">Triangular Arbitrage Scanner</h1>
+<h1 class='text-2xl font-bold mb-4'>Triangular Arbitrage Scanner</h1>
 
-<div class="mb-4">
-<label class="font-bold mr-2">Select Exchanges:</label><br>
-<label><input type="checkbox" value="binance" checked> Binance</label><br>
-<label><input type="checkbox" value="bybit" checked> Bybit</label><br>
-<label><input type="checkbox" value="kucoin" checked> KuCoin</label>
+<div class='mb-4'>
+<label class='font-bold mr-2'>Select Exchanges:</label><br>
+<label><input type='checkbox' value='binance' checked> Binance</label><br>
+<label><input type='checkbox' value='bybit' checked> Bybit</label><br>
+<label><input type='checkbox' value='kucoin' checked> KuCoin</label>
 </div>
 
-<div class="mb-4">
-<label class="mr-2 font-bold">Min Profit %:</label>
-<input type="number" id="min_profit" value="0.3" step="0.1" class="bg-gray-800 p-2 rounded w-20">
+<div class='mb-4'>
+<label class='mr-2 font-bold'>Min Profit %:</label>
+<input type='number' id='min_profit' value='0.3' step='0.1' class='bg-gray-800 p-2 rounded w-20'>
 </div>
 
-<button onclick="runScan()" class="bg-blue-600 p-2 rounded">Run Scan</button>
+<button onclick='runScan()' class='bg-blue-600 p-2 rounded'>Run Scan</button>
 
-<div id="results" class="mt-4"></div>
+<div id='results' class='mt-4'></div>
 
 <script>
 async function runScan(){
@@ -249,7 +247,6 @@ async function runScan(){
             return;
         }
 
-        // Build table
         let html = `<table>
         <thead>
             <tr>
@@ -283,7 +280,8 @@ async function runScan(){
 </script>
 
 </body>
-</html>
+</html>"#)
+}
 
 /* ================= SERVER ================= */
 #[tokio::main]
@@ -294,4 +292,4 @@ async fn main(){
     log_scan_activity("Scanner service started");
     let listener=tokio::net::TcpListener::bind("0.0.0.0:10000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
-    }
+        }
