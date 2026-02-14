@@ -260,39 +260,147 @@ async fn scan_handler(Query(params):Query<ScanParams>)->Json<Value>{
 }
 
 /* ================= UI ================= */
-async fn ui()->Html<&'static str>{
-Html(r#"
-<!DOCTYPE html>
-<html>
+async fn ui() -> Html<&'static str> {
+Html(r#"<!DOCTYPE html>
+<html lang="en">
 <head>
-<title>Triangular Arbitrage Scanner</title>
-<script src='https://cdn.tailwindcss.com'></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Real-Time DEX Arbitrage Scanner</title>
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+body { background:#020617; color:#e5e7eb; font-family:system-ui; }
+.card { background:#020617; border:1px solid #1e293b; border-radius:10px; padding:20px; }
+button { transition: all 0.2s ease; }
+button:hover { transform: scale(1.02); }
+.status-dot {
+    width:10px; height:10px; border-radius:50%;
+    display:inline-block; margin-right:6px;
+}
+.status-idle { background:#64748b; }
+.status-run { background:#22c55e; animation:pulse 1s infinite; }
+@keyframes pulse {
+    0% { opacity:1 } 50% { opacity:0.4 } 100% { opacity:1 }
+}
+table { width:100%; border-collapse: collapse; }
+th, td { padding:10px; border-bottom:1px solid #1e293b; text-align:center; }
+th { background:#020617; }
+tr:hover { background:#020617; }
+</style>
 </head>
-<body class='bg-slate-900 text-white p-6'>
-<h1 class='text-2xl font-bold mb-4'>Triangular Arbitrage Scanner</h1>
 
-<label><input type='checkbox' value='binance' checked> Binance</label><br>
-<label><input type='checkbox' value='bybit' checked> Bybit</label><br>
-<label><input type='checkbox' value='kucoin' checked> KuCoin</label><br><br>
+<body class="p-6">
 
-<input id='min_profit' type='number' value='0.3' step='0.1' class='bg-gray-800 p-2 rounded'>
-<button onclick='runScan()' class='bg-blue-600 px-4 py-2 rounded'>Run Scan</button>
+<div class="max-w-5xl mx-auto">
 
-<div id='results' class='mt-4'></div>
+<h1 class="text-2xl font-bold mb-4">Triangular Arbitrage Scanner</h1>
+
+<div class="card mb-4">
+
+<div class="flex flex-wrap gap-6 items-center">
+
+<div>
+<label class="font-semibold">Exchanges</label><br>
+<label><input type="checkbox" value="binance" checked> Binance</label><br>
+<label><input type="checkbox" value="bybit" checked> Bybit</label><br>
+<label><input type="checkbox" value="kucoin" checked> KuCoin</label>
+</div>
+
+<div>
+<label class="font-semibold">Min Profit %</label><br>
+<input id="min_profit" type="number" value="0.3" step="0.1"
+class="bg-black border border-slate-700 rounded px-3 py-2 w-24">
+</div>
+
+<div>
+<button onclick="runScan()"
+class="bg-blue-600 px-6 py-3 rounded font-semibold">
+Run Scan
+</button>
+</div>
+
+<div class="ml-auto text-sm">
+<span id="statusDot" class="status-dot status-idle"></span>
+<span id="statusText">Idle</span>
+</div>
+
+</div>
+</div>
+
+<div class="card">
+<div id="results">No scan executed yet.</div>
+</div>
+
+</div>
 
 <script>
-async function runScan(){
-    const ex=[...document.querySelectorAll("input:checked")].map(x=>x.value).join(",");
-    const p=document.getElementById("min_profit").value;
-    const r=await fetch(`/scan?exchanges=${ex}&min_profit=${p}`);
-    const d=await r.json();
-    document.getElementById("results").innerHTML=
-        "<pre>"+JSON.stringify(d,null,2)+"</pre>";
+async function runScan() {
+
+    const dot = document.getElementById("statusDot");
+    const status = document.getElementById("statusText");
+    const results = document.getElementById("results");
+
+    dot.className = "status-dot status-run";
+    status.textContent = "Scanning...";
+    results.innerHTML = "Scanning exchanges...";
+
+    const exchanges = Array.from(
+        document.querySelectorAll("input[type=checkbox]:checked")
+    ).map(e => e.value);
+
+    const minProfit = document.getElementById("min_profit").value;
+
+    try {
+        const url = `/scan?exchanges=${exchanges.join(",")}&min_profit=${minProfit}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        dot.className = "status-dot status-idle";
+        status.textContent = "Idle";
+
+        if (!data.opportunities || data.opportunities.length === 0) {
+            results.innerHTML = "<p>No arbitrage opportunities found</p>";
+            return;
+        }
+
+        let html = `
+        <table>
+        <thead>
+        <tr>
+            <th>Exchange</th>
+            <th>Triangle</th>
+            <th>Direction</th>
+            <th>Profit %</th>
+            <th>Confidence</th>
+        </tr>
+        </thead>
+        <tbody>`;
+
+        data.opportunities.forEach(o => {
+            html += `
+            <tr>
+                <td>${o.exchange}</td>
+                <td>${o.triangle.join(" → ")}</td>
+                <td>${o.direction}</td>
+                <td>${o.profit_percent.toFixed(4)}</td>
+                <td>${o.confidence.toFixed(1)}%</td>
+            </tr>`;
+        });
+
+        html += "</tbody></table>";
+        results.innerHTML = html;
+
+    } catch (err) {
+        dot.className = "status-dot status-idle";
+        status.textContent = "Error";
+        results.innerHTML = "<p style='color:#f87171'>Scanner connection failed</p>";
+    }
 }
 </script>
+
 </body>
-</html>
-"#)
+</html>"#)
 }
 
 /* ================= SERVER ================= */
