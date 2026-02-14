@@ -194,65 +194,96 @@ async fn scan_handler(Query(params):Query<ScanParams>)->Json<Value>{ Json(run_sc
 async fn ui()->Html<&'static str>{
 Html(r#"
 <!DOCTYPE html>
-<html lang='en'>
+<html lang="en">
 <head>
-<meta charset='UTF-8'>
-<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Triangular Arbitrage Scanner</title>
-<script src='https://cdn.tailwindcss.com'></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+body { background:#0f172a; color:white; font-family:Arial,sans-serif; }
+button { padding:12px 24px; font-size:16px; margin-top:10px; }
+table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+th, td { border: 1px solid #555; padding: 8px; text-align: center; }
+th { background-color: #1e293b; }
+tr:nth-child(even) { background-color: #1e293b; }
+tr:nth-child(odd) { background-color: #0f172a; }
+</style>
 </head>
-<body class='p-4 bg-gray-900 text-white'>
-<h1 class='text-2xl font-bold mb-4'>Triangular Arbitrage Scanner</h1>
+<body class="p-4">
 
-<div class='mb-4'>
-<label class='mr-2'>Select Exchanges:</label>
-<select id='exchanges' multiple class='bg-gray-800 p-2 rounded'>
-<option value='binance' selected>Binance</option>
-<option value='bybit' selected>Bybit</option>
-<option value='kucoin' selected>KuCoin</option>
-</select>
+<h1 class="text-2xl font-bold mb-4">Triangular Arbitrage Scanner</h1>
+
+<div class="mb-4">
+<label class="font-bold mr-2">Select Exchanges:</label><br>
+<label><input type="checkbox" value="binance" checked> Binance</label><br>
+<label><input type="checkbox" value="bybit" checked> Bybit</label><br>
+<label><input type="checkbox" value="kucoin" checked> KuCoin</label>
 </div>
 
-<div class='mb-4'>
-<label class='mr-2'>Min Profit %:</label>
-<input type='number' id='min_profit' value='0.3' step='0.1' class='bg-gray-800 p-2 rounded w-20'>
+<div class="mb-4">
+<label class="mr-2 font-bold">Min Profit %:</label>
+<input type="number" id="min_profit" value="0.3" step="0.1" class="bg-gray-800 p-2 rounded w-20">
 </div>
 
-<button onclick='runScan()' class='bg-blue-600 p-2 rounded'>Run Scan</button>
+<button onclick="runScan()" class="bg-blue-600 p-2 rounded">Run Scan</button>
 
-<div class='log mt-4 p-2 bg-gray-800 rounded h-48 overflow-auto' id='log'>Logs appear here...</div>
-<div id='results'></div>
+<div id="results" class="mt-4"></div>
 
 <script>
 async function runScan(){
-const exSelect=document.getElementById('exchanges');
-const minProfit=document.getElementById('min_profit').value;
-const selectedEx=[];
-for(let option of exSelect.options){if(option.selected){selectedEx.push(option.value);}}
-const logDiv=document.getElementById('log');
-logDiv.innerHTML='Starting scan...\n';
-const url='/scan?exchanges='+selectedEx.join(',')+'&min_profit='+minProfit;
-const res=await fetch(url);
-const data=await res.json();
-logDiv.innerHTML+='Scan finished in '+data.duration_ms+' ms\n';
-const resDiv=document.getElementById('results');
-resDiv.innerHTML='';
-if(data.opportunities.length===0){ resDiv.innerHTML='<p>No arbitrage opportunities found</p>'; return; }
-data.opportunities.forEach(o=>{
-resDiv.innerHTML+=`<div class='bg-gray-700 p-4 rounded my-2'>
-<h3 class='font-bold'>${o.exchange}</h3>
-<p><b>Triangle Path:</b> ${o.triangle.join(' → ')}</p>
-<p><b>Direction:</b> ${o.direction}</p>
-<p><b>Profit %:</b> ${o.profit_percent.toFixed(4)}%</p>
-<p><b>Confidence:</b> ${o.confidence.toFixed(1)}%</p>
-</div>`;});
+    const checkboxes = document.querySelectorAll("input[type=checkbox]:checked");
+    const selectedEx = Array.from(checkboxes).map(c => c.value);
+    const minProfit = document.getElementById("min_profit").value;
+
+    const resDiv = document.getElementById("results");
+    resDiv.innerHTML = "<p>Scanning, please wait...</p>";
+
+    try {
+        const url = '/scan?exchanges=' + selectedEx.join(',') + '&min_profit=' + minProfit;
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if(!data.opportunities || data.opportunities.length===0){
+            resDiv.innerHTML = "<p>No arbitrage opportunities found</p>";
+            return;
+        }
+
+        // Build table
+        let html = `<table>
+        <thead>
+            <tr>
+                <th>Exchange</th>
+                <th>Triangle Path</th>
+                <th>Direction</th>
+                <th>Profit %</th>
+                <th>Confidence %</th>
+            </tr>
+        </thead>
+        <tbody>`;
+
+        data.opportunities.forEach(o=>{
+            html += `<tr>
+                <td>${o.exchange}</td>
+                <td>${o.triangle.join(' → ')}</td>
+                <td>${o.direction}</td>
+                <td>${o.profit_percent.toFixed(4)}</td>
+                <td>${o.confidence.toFixed(1)}</td>
+            </tr>`;
+        });
+
+        html += `</tbody></table>`;
+        resDiv.innerHTML = html;
+
+    } catch(err){
+        resDiv.innerHTML = "<p style='color:red'>Error connecting to scanner.</p>";
+        console.error(err);
+    }
 }
 </script>
 
 </body>
 </html>
-"#)
-}
 
 /* ================= SERVER ================= */
 #[tokio::main]
