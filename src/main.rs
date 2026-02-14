@@ -285,11 +285,20 @@ async function runScan(){
 
 /* ================= SERVER ================= */
 #[tokio::main]
-async fn main(){
-    let app=Router::new()
+async fn main() {
+    let port: u16 = std::env::var("PORT")
+        .unwrap_or("10000".into())
+        .parse()
+        .unwrap();
+
+    let app = Router::new()
         .route("/", get(ui))
         .route("/scan", get(scan_handler));
+
     log_scan_activity("Scanner service started");
-    let listener=tokio::net::TcpListener::bind("0.0.0.0:10000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-        }
+
+    axum::Server::bind(&format!("0.0.0.0:{}", port).parse().unwrap())
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
+}
