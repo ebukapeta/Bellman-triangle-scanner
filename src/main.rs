@@ -118,34 +118,80 @@ fn evaluate_cycle(graph: &Graph, cycle: &Vec<String>) -> (f64,String,f64) {
 }
 
 /* ================= BINANCE WS ================= */
-async fn collect_pairs_binance(duration:u64)->HashMap<String,OrderBook>{
-    log_scan_activity("Connecting Binance WS");
-    let url="wss://stream.binance.com:9443/ws/!bookTicker";
-    let (mut ws, _) = match connect_async(url).await {
-      Ok(v) => v,
-      Err(e) => {
-        log_scan_activity(&format!("WebSocket connection failed: {}", e));
-        return HashMap::new();
-        }
-    };
-    let mut pairs=HashMap::new();
-    let start=std::time::Instant::now();
+async fn collect_pairs_binance(duration_secs: u64) -> HashMap<String, OrderBook> {
+    let mut pairs = HashMap::new();
 
-    while start.elapsed().as_secs()<duration {
-        if let Some(msg)=ws.next().await {
-            let txt=msg.unwrap().to_string();
-            let v:Value=serde_json::from_str(&txt).unwrap();
-            let sym=v["s"].as_str().unwrap().to_string();
-            let bid=v["b"].as_str().unwrap().parse().unwrap();
-            let ask=v["a"].as_str().unwrap().parse().unwrap();
-            let bid_vol=v["B"].as_str().unwrap().parse().unwrap();
-            let ask_vol=v["A"].as_str().unwrap().parse().unwrap();
-            pairs.insert(sym,OrderBook{bid,ask,bid_vol,ask_vol});
+    log_scan_activity("Connecting to Binance WS");
+
+    let ws_conn = connect_async("wss://stream.binance.com:9443/ws").await;
+    if ws_conn.is_err() {
+        log_scan_activity("Binance WS connection failed");
+        return pairs;
+    }
+
+    let (mut ws, _) = ws_conn.unwrap();
+
+    let symbols = vec!["btcusdt", "ethusdt", "ethbtc"];
+
+    for sym in &symbols {
+        let sub = serde_json::json!({
+            "method": "SUBSCRIBE",
+            "params": [format!("{}@depth5", sym)],
+            "id": 1
+        });
+
+        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await;
+    }
+
+    let start = std::time::Instant::now();
+
+    while start.elapsed().as_secs() < duration_secs {
+        if let Some(msg) = ws.next().await {
+            if let Ok(message) = msg {
+                if let Ok(text) = message.to_text() {
+                    if let Ok(v) = serde_json::from_str::<Value>(text) {
+
+                        let symbol = v.get("s").and_then(|x| x.as_str());
+                        let bid = v.get("bids")
+                            .and_then(|b| b.get(0))
+                            .and_then(|x| x.get(0))
+                            .and_then(|x| x.as_str())
+                            .and_then(|x| x.parse::<f64>().ok());
+
+                        let ask = v.get("asks")
+                            .and_then(|b| b.get(0))
+                            .and_then(|x| x.get(0))
+                            .and_then(|x| x.as_str())
+                            .and_then(|x| x.parse::<f64>().ok());
+
+                        let bid_vol = v.get("bids")
+                            .and_then(|b| b.get(0))
+                            .and_then(|x| x.get(1))
+                            .and_then(|x| x.as_str())
+                            .and_then(|x| x.parse::<f64>().ok());
+
+                        let ask_vol = v.get("asks")
+                            .and_then(|b| b.get(0))
+                            .and_then(|x| x.get(1))
+                            .and_then(|x| x.as_str())
+                            .and_then(|x| x.parse::<f64>().ok());
+
+                        if let (Some(s), Some(b), Some(a), Some(bv), Some(av)) =
+                            (symbol, bid, ask, bid_vol, ask_vol)
+                        {
+                            pairs.insert(
+                                s.to_uppercase(),
+                                OrderBook { bid: b, ask: a, bid_vol: bv, ask_vol: av }
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
-    log_scan_activity(&format!("Binance collected {}",pairs.len()));
-    pairs
+    log_scan_activity(&format!("Binance collected {} pairs", pairs.len()));
+    pairs 
 }
 
 /* ================= BYBIT WS ================= */
