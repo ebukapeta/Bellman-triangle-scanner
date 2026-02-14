@@ -121,7 +121,13 @@ fn evaluate_cycle(graph: &Graph, cycle: &Vec<String>) -> (f64,String,f64) {
 async fn collect_pairs_binance(duration:u64)->HashMap<String,OrderBook>{
     log_scan_activity("Connecting Binance WS");
     let url="wss://stream.binance.com:9443/ws/!bookTicker";
-    let (mut ws,_)=connect_async(url).await.unwrap();
+    let (mut ws, _) = match connect_async(url).await {
+      Ok(v) => v,
+      Err(e) => {
+        log_scan_activity(&format!("WebSocket connection failed: {}", e));
+        return HashMap::new();
+        }
+    };
     let mut pairs=HashMap::new();
     let start=std::time::Instant::now();
 
