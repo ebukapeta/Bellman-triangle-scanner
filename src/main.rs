@@ -22,14 +22,20 @@ const MAX_SPREAD: f64 = 0.002;
 
 /* ================= LOGGING ================= */
 fn log_scan_activity(message: &str) {
-    let timestamp = Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now().to_rfc3339();
     let log_line = format!("[{}] {}\n", timestamp, message);
-    let mut file = OpenOptions::new()
+
+    // 1️⃣ Log to stdout (Render captures this automatically)
+    println!("{}", log_line);
+
+    // 2️⃣ Optional: log to a local file if writable, but ignore errors
+    if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("scanner_activity.log")
-        .unwrap();
-    file.write_all(log_line.as_bytes()).unwrap();
+        .open("scanner_activity.log") 
+    {
+        let _ = file.write_all(log_line.as_bytes());
+    }
 }
 
 /* ================= MODELS ================= */
