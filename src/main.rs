@@ -1,6 +1,8 @@
-// src/main.rs - WebSocket Collection + On-Demand Scanning
+// src/main.rs - Complete with Binance, Bybit, AND KuCoin
 #![warn(clippy::all)]
 
+use actix_web::{web, App, HttpServer, HttpResponse, Responder};
+use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -9,10 +11,8 @@ use tokio::time::{self, Duration, Instant};
 use chrono::{Utc, Local};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::algo::bellman_ford;
-use tauri::{Manager, Window, State};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use log::{info, warn, error, debug};
 
 // ==================== Data Models ====================
 
@@ -32,19 +32,7 @@ pub struct ArbitrageOpportunity {
 pub struct ScanConfig {
     pub min_profit_threshold: f64,
     pub exchanges: Vec<String>,
-    pub max_triangle_length: usize,
     pub collection_duration_secs: u64,
-}
-
-impl Default for ScanConfig {
-    fn default() -> Self {
-        Self {
-            min_profit_threshold: 0.3,
-            exchanges: vec!["binance".to_string(), "bybit".to_string(), "kucoin".to_string()],
-            max_triangle_length: 3,
-            collection_duration_secs: 10, // 10 seconds of data collection
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,14 +57,19 @@ pub struct ScanSummary {
     pub paths_found: usize,
     pub profitable_triangles: usize,
     pub collection_time_secs: u64,
-    pub avg_latency_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanResponse {
+    pub opportunities: Vec<ArbitrageOpportunity>,
+    pub summaries: Vec<ScanSummary>,
+    pub logs: Vec<ScanLog>,
 }
 
 // ==================== WebSocket Collectors ====================
 
 pub struct BinanceWebSocketCollector {
-    collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>, // symbol -> (bid, ask, timestamp)
-    is_collecting: Arc<Mutex<bool>>,
+    collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
 }
 
@@ -84,17 +77,13 @@ impl BinanceWebSocketCollector {
     pub fn new() -> Self {
         Self {
             collected_data: Arc::new(Mutex::new(HashMap::new())),
-            is_collecting: Arc::new(Mutex::new(false)),
             logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
-        let mut collect_flag = self.is_collecting.lock().await;
-        *collect_flag = true;
-        drop(collect_flag);
-
+        
         // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
@@ -112,10 +101,9 @@ impl BinanceWebSocketCollector {
 
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
-        let is_collecting_clone = self.is_collecting.clone();
 
         // Spawn WebSocket connection
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let ws_url = "wss://stream.binance.com:9443/ws/!ticker@arr";
             
             match connect_async(ws_url).await {
@@ -151,7 +139,7 @@ impl BinanceWebSocketCollector {
                                                         logs_clone.lock().await.push(ScanLog {
                                                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                                                             exchange: "binance".to_string(),
-                                                            message: format!("Collected {} pairs so far...", pair_count),
+                                                            message: format!("Collected {} pairs...", pair_count),
                                                             level: "debug".to_string(),
                                                         });
                                                     }
@@ -164,7 +152,12 @@ impl BinanceWebSocketCollector {
                                     let _ = write.send(Message::Pong(data)).await;
                                 }
                                 Err(e) => {
-                                    error!("Binance WebSocket error: {}", e);
+                                    logs_clone.lock().await.push(ScanLog {
+                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                        exchange: "binance".to_string(),
+                                        message: format!("WebSocket error: {}", e),
+                                        level: "error".to_string(),
+                                    });
                                     break;
                                 }
                                 _ => {}
@@ -172,7 +165,6 @@ impl BinanceWebSocketCollector {
                         }
                     }
 
-                    // Close connection gracefully
                     let _ = write.close().await;
                     
                     logs_clone.lock().await.push(ScanLog {
@@ -183,7 +175,6 @@ impl BinanceWebSocketCollector {
                     });
                 }
                 Err(e) => {
-                    error!("Failed to connect to Binance WebSocket: {}", e);
                     logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "binance".to_string(),
@@ -192,13 +183,7 @@ impl BinanceWebSocketCollector {
                     });
                 }
             }
-        });
-
-        // Wait for collection to complete
-        let _ = handle.await;
-
-        let mut collect_flag = self.is_collecting.lock().await;
-        *collect_flag = false;
+        }).await.unwrap();
 
         let final_data = self.collected_data.lock().await;
         let pairs_collected = final_data.len();
@@ -207,10 +192,9 @@ impl BinanceWebSocketCollector {
         ScanSummary {
             exchange: "binance".to_string(),
             pairs_collected,
-            paths_found: 0, // Will be filled after analysis
+            paths_found: 0,
             profitable_triangles: 0,
             collection_time_secs: start_time.elapsed().as_secs(),
-            avg_latency_ms: 50.0, // Placeholder
         }
     }
 
@@ -225,7 +209,6 @@ impl BinanceWebSocketCollector {
 
 pub struct BybitWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
-    is_collecting: Arc<Mutex<bool>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
 }
 
@@ -233,17 +216,13 @@ impl BybitWebSocketCollector {
     pub fn new() -> Self {
         Self {
             collected_data: Arc::new(Mutex::new(HashMap::new())),
-            is_collecting: Arc::new(Mutex::new(false)),
             logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
-        let mut collect_flag = self.is_collecting.lock().await;
-        *collect_flag = true;
-        drop(collect_flag);
-
+        
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -261,7 +240,7 @@ impl BybitWebSocketCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let ws_url = "wss://stream.bybit.com/v5/public/spot";
             
             match connect_async(ws_url).await {
@@ -312,7 +291,12 @@ impl BybitWebSocketCollector {
                                     let _ = write.send(Message::Pong(data)).await;
                                 }
                                 Err(e) => {
-                                    error!("Bybit WebSocket error: {}", e);
+                                    logs_clone.lock().await.push(ScanLog {
+                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                        exchange: "bybit".to_string(),
+                                        message: format!("WebSocket error: {}", e),
+                                        level: "error".to_string(),
+                                    });
                                     break;
                                 }
                                 _ => {}
@@ -330,7 +314,6 @@ impl BybitWebSocketCollector {
                     });
                 }
                 Err(e) => {
-                    error!("Failed to connect to Bybit WebSocket: {}", e);
                     logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
@@ -339,12 +322,7 @@ impl BybitWebSocketCollector {
                     });
                 }
             }
-        });
-
-        let _ = handle.await;
-
-        let mut collect_flag = self.is_collecting.lock().await;
-        *collect_flag = false;
+        }).await.unwrap();
 
         let final_data = self.collected_data.lock().await;
         let pairs_collected = final_data.len();
@@ -356,7 +334,175 @@ impl BybitWebSocketCollector {
             paths_found: 0,
             profitable_triangles: 0,
             collection_time_secs: start_time.elapsed().as_secs(),
-            avg_latency_ms: 50.0,
+        }
+    }
+
+    pub fn get_data(&self) -> Arc<Mutex<HashMap<String, (f64, f64, i64)>>> {
+        self.collected_data.clone()
+    }
+
+    pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
+        self.logs.clone()
+    }
+}
+
+// ==================== NEW: KuCoin WebSocket Collector ====================
+
+pub struct KuCoinWebSocketCollector {
+    collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
+    logs: Arc<Mutex<Vec<ScanLog>>>,
+}
+
+impl KuCoinWebSocketCollector {
+    pub fn new() -> Self {
+        Self {
+            collected_data: Arc::new(Mutex::new(HashMap::new())),
+            logs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
+        let start_time = Instant::now();
+        
+        let mut data = self.collected_data.lock().await;
+        data.clear();
+        drop(data);
+
+        let mut logs = self.logs.lock().await;
+        logs.clear();
+        logs.push(ScanLog {
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
+            exchange: "kucoin".to_string(),
+            message: format!("Starting WebSocket collection for {} seconds", duration_secs),
+            level: "info".to_string(),
+        });
+        drop(logs);
+
+        let data_clone = self.collected_data.clone();
+        let logs_clone = self.logs.clone();
+
+        tokio::spawn(async move {
+            // First get WebSocket token from KuCoin REST API
+            let client = reqwest::Client::new();
+            let token_url = "https://api.kucoin.com/api/v1/bullet-public";
+            
+            match client.post(token_url).send().await {
+                Ok(resp) => {
+                    if let Ok(token_data) = resp.json::<serde_json::Value>().await {
+                        if let (Some(endpoint), Some(token)) = (
+                            token_data["data"]["instanceServers"][0]["endpoint"].as_str(),
+                            token_data["data"]["token"].as_str()
+                        ) {
+                            let ws_url = format!("{}?token={}", endpoint, token);
+                            
+                            match connect_async(&ws_url).await {
+                                Ok((ws_stream, _)) => {
+                                    let (mut write, mut read) = ws_stream.split();
+                                    
+                                    // Subscribe to all tickers
+                                    let subscribe_msg = serde_json::json!({
+                                        "id": 1,
+                                        "type": "subscribe",
+                                        "topic": "/market/ticker:all",
+                                        "privateChannel": false,
+                                        "response": true
+                                    });
+                                    
+                                    if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
+                                        let _ = write.send(Message::Text(msg_str)).await;
+                                    }
+
+                                    logs_clone.lock().await.push(ScanLog {
+                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                        exchange: "kucoin".to_string(),
+                                        message: "WebSocket connected and subscribed".to_string(),
+                                        level: "success".to_string(),
+                                    });
+
+                                    let mut pair_count = 0;
+                                    let start = Instant::now();
+
+                                    while start.elapsed().as_secs() < duration_secs {
+                                        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_secs(1), read.next()).await {
+                                            match msg {
+                                                Ok(Message::Text(text)) => {
+                                                    if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                                        if ticker_data["type"].as_str() == Some("message") {
+                                                            if let Some(data) = ticker_data["data"].as_object() {
+                                                                if let (Some(symbol), Some(bestBid), Some(bestAsk)) = (
+                                                                    data.get("symbol").and_then(|s| s.as_str()),
+                                                                    data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                                                    data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                                                ) {
+                                                                    if symbol.ends_with("USDT") {
+                                                                        let mut data_map = data_clone.lock().await;
+                                                                        data_map.insert(symbol.to_string(), (bestBid, bestAsk, chrono::Utc::now().timestamp_millis()));
+                                                                        pair_count += 1;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Ok(Message::Ping(data)) => {
+                                                    let _ = write.send(Message::Pong(data)).await;
+                                                }
+                                                Err(e) => {
+                                                    logs_clone.lock().await.push(ScanLog {
+                                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                                        exchange: "kucoin".to_string(),
+                                                        message: format!("WebSocket error: {}", e),
+                                                        level: "error".to_string(),
+                                                    });
+                                                    break;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+
+                                    let _ = write.close().await;
+                                    
+                                    logs_clone.lock().await.push(ScanLog {
+                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                        exchange: "kucoin".to_string(),
+                                        message: format!("Collection complete. Total pairs: {}", pair_count),
+                                        level: "success".to_string(),
+                                    });
+                                }
+                                Err(e) => {
+                                    logs_clone.lock().await.push(ScanLog {
+                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                        exchange: "kucoin".to_string(),
+                                        message: format!("WebSocket connection failed: {}", e),
+                                        level: "error".to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    logs_clone.lock().await.push(ScanLog {
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        exchange: "kucoin".to_string(),
+                        message: format!("Failed to get WebSocket token: {}", e),
+                        level: "error".to_string(),
+                    });
+                }
+            }
+        }).await.unwrap();
+
+        let final_data = self.collected_data.lock().await;
+        let pairs_collected = final_data.len();
+        drop(final_data);
+
+        ScanSummary {
+            exchange: "kucoin".to_string(),
+            pairs_collected,
+            paths_found: 0,
+            profitable_triangles: 0,
+            collection_time_secs: start_time.elapsed().as_secs(),
         }
     }
 
@@ -374,7 +520,7 @@ impl BybitWebSocketCollector {
 pub struct ArbitrageDetector {
     binance_collector: BinanceWebSocketCollector,
     bybit_collector: BybitWebSocketCollector,
-    // Add KuCoin similarly
+    kucoin_collector: KuCoinWebSocketCollector,  // Added KuCoin
 }
 
 impl ArbitrageDetector {
@@ -382,6 +528,7 @@ impl ArbitrageDetector {
         Self {
             binance_collector: BinanceWebSocketCollector::new(),
             bybit_collector: BybitWebSocketCollector::new(),
+            kucoin_collector: KuCoinWebSocketCollector::new(),  // Added KuCoin
         }
     }
 
@@ -392,6 +539,9 @@ impl ArbitrageDetector {
         } else if symbol.ends_with("BUSD") {
             let base = symbol.trim_end_matches("BUSD").to_string();
             Some((base, "BUSD".to_string()))
+        } else if symbol.ends_with("USDC") {
+            let base = symbol.trim_end_matches("USDC").to_string();
+            Some((base, "USDC".to_string()))
         } else {
             None
         }
@@ -402,7 +552,6 @@ impl ArbitrageDetector {
         let mut node_indices = HashMap::new();
         let mut currencies = HashSet::new();
 
-        // Collect all unique currencies
         for symbol in tickers.keys() {
             if let Some((base, quote)) = Self::parse_symbol(symbol) {
                 currencies.insert(base);
@@ -410,13 +559,11 @@ impl ArbitrageDetector {
             }
         }
 
-        // Add nodes
         for currency in currencies {
             let idx = graph.add_node(currency.clone());
             node_indices.insert(currency, idx);
         }
 
-        // Add edges with -log(rate) weights
         for (symbol, (bid, ask, _)) in tickers {
             if let Some((base, quote)) = Self::parse_symbol(symbol) {
                 if let (Some(&from_idx), Some(&to_idx)) = (node_indices.get(&base), node_indices.get(&quote)) {
@@ -436,24 +583,27 @@ impl ArbitrageDetector {
     }
 
     fn calculate_execution_chance(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
-        let mut total_liquidity_score = 0.0;
+        let mut score = 0.0;
+        let mut count = 0;
         
         for i in 0..path.len() - 1 {
             let symbol = format!("{}{}", path[i], path[i + 1]);
             if let Some((bid, ask, timestamp)) = tickers.get(&symbol) {
-                // Liquidity score based on bid/ask spread and recency
                 let spread = (ask - bid) / bid;
-                let spread_score = 1.0 - (spread / 0.01).min(1.0); // 1% spread = 0 score
+                let spread_score = 1.0 - (spread / 0.01).min(1.0);
                 
                 let age = (Utc::now().timestamp_millis() - timestamp) as f64 / 1000.0;
-                let recency_score = 1.0 - (age / 5.0).min(1.0); // 5 seconds old = 0 score
+                let recency_score = 1.0 - (age / 5.0).min(1.0);
                 
-                total_liquidity_score += (spread_score * 0.7 + recency_score * 0.3);
+                score += spread_score * 0.6 + recency_score * 0.4;
+                count += 1;
             }
         }
         
-        let avg_score = total_liquidity_score / (path.len() - 1) as f64;
-        50.0 + (avg_score * 45.0) // 50-95% range
+        if count == 0 { return 50.0; }
+        
+        let avg_score = score / count as f64;
+        50.0 + (avg_score * 45.0)
     }
 
     fn find_profitable_triangles(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
@@ -491,7 +641,7 @@ impl ArbitrageDetector {
                                             profit_margin_after: profit * 0.9,
                                             chance_of_executing: chance,
                                             timestamp: Utc::now().timestamp_millis(),
-                                            exchange: "binance".to_string(), // Will be updated
+                                            exchange: "unknown".to_string(), // Will be set by caller
                                             estimated_slippage: profit * 0.1,
                                         });
                                     }
@@ -558,12 +708,18 @@ impl ArbitrageDetector {
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
-        let summary = match exchange {
+        let (summary, data, logs) = match exchange {
             "binance" => {
-                self.binance_collector.start_collection(duration_secs).await
+                let summary = self.binance_collector.start_collection(duration_secs).await;
+                (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
             }
             "bybit" => {
-                self.bybit_collector.start_collection(duration_secs).await
+                let summary = self.bybit_collector.start_collection(duration_secs).await;
+                (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
+            }
+            "kucoin" => {  // Added KuCoin
+                let summary = self.kucoin_collector.start_collection(duration_secs).await;
+                (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
             }
             _ => {
                 return (Vec::new(), ScanSummary {
@@ -572,21 +728,8 @@ impl ArbitrageDetector {
                     paths_found: 0,
                     profitable_triangles: 0,
                     collection_time_secs: 0,
-                    avg_latency_ms: 0.0,
                 }, Vec::new())
             }
-        };
-
-        let data = match exchange {
-            "binance" => self.binance_collector.get_data(),
-            "bybit" => self.bybit_collector.get_data(),
-            _ => return (Vec::new(), summary, Vec::new()),
-        };
-
-        let logs = match exchange {
-            "binance" => self.binance_collector.get_logs(),
-            "bybit" => self.bybit_collector.get_logs(),
-            _ => return (Vec::new(), summary, Vec::new()),
         };
 
         let data_guard = data.lock().await;
@@ -602,7 +745,12 @@ impl ArbitrageDetector {
         }
 
         let (graph, node_indices) = self.build_graph(&tickers);
-        let (opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
+        let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
+
+        // Set the exchange name for each opportunity
+        for opp in &mut opportunities {
+            opp.exchange = exchange.to_string();
+        }
 
         let mut final_summary = summary;
         final_summary.paths_found = paths_found;
@@ -612,7 +760,7 @@ impl ArbitrageDetector {
     }
 
     pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
-        -> (Vec<ArbitrageOpportunity>, Vec<ScanSummary>, Vec<ScanLog>) {
+        -> ScanResponse {
         
         let mut all_opportunities = Vec::new();
         let mut all_summaries = Vec::new();
@@ -627,105 +775,64 @@ impl ArbitrageDetector {
         
         all_opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap());
         
-        (all_opportunities, all_summaries, all_logs)
+        ScanResponse {
+            opportunities: all_opportunities,
+            summaries: all_summaries,
+            logs: all_logs,
+        }
     }
 }
 
-// ==================== Tauri State ====================
+// ==================== HTTP Handlers ====================
 
-pub struct AppState {
-    detector: Arc<ArbitrageDetector>,
-    last_scan_results: Arc<RwLock<Vec<ArbitrageOpportunity>>>,
-    last_summaries: Arc<RwLock<Vec<ScanSummary>>>,
-    last_logs: Arc<RwLock<Vec<ScanLog>>>,
-    config: Mutex<ScanConfig>,
+async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
+    println!("Received scan request for exchanges: {:?}", req.exchanges);
+    
+    let detector = ArbitrageDetector::new();
+    let min_profit = req.min_profit.unwrap_or(0.3);
+    let duration = req.collection_duration.unwrap_or(10);
+    
+    let response = detector.scan_multiple_exchanges(
+        req.exchanges.clone(), 
+        min_profit, 
+        duration
+    ).await;
+    
+    println!("Scan complete. Found {} opportunities", response.opportunities.len());
+    
+    HttpResponse::Ok().json(response)
 }
 
-// ==================== Tauri Commands ====================
-
-#[tauri::command]
-async fn scan_now(
-    request: ScanRequest,
-    state: tauri::State<'_, AppState>,
-) -> Result<(Vec<ArbitrageOpportunity>, Vec<ScanSummary>, Vec<ScanLog>), String> {
-    let detector = &state.detector;
-    let min_profit = request.min_profit.unwrap_or(0.3);
-    let duration = request.collection_duration.unwrap_or(10);
-    
-    info!("Starting scan on exchanges: {:?} for {} seconds", request.exchanges, duration);
-    
-    let (opportunities, summaries, logs) = detector
-        .scan_multiple_exchanges(request.exchanges, min_profit, duration)
-        .await;
-    
-    // Store results
-    let mut last_results = state.last_scan_results.write().await;
-    *last_results = opportunities.clone();
-    
-    let mut last_summaries = state.last_summaries.write().await;
-    *last_summaries = summaries.clone();
-    
-    let mut last_logs = state.last_logs.write().await;
-    *last_logs = logs.clone();
-    
-    info!("Scan complete. Found {} opportunities", opportunities.len());
-    
-    Ok((opportunities, summaries, logs))
-}
-
-#[tauri::command]
-async fn get_last_results(state: tauri::State<'_, AppState>) -> Result<Vec<ArbitrageOpportunity>, String> {
-    let results = state.last_scan_results.read().await;
-    Ok(results.clone())
-}
-
-#[tauri::command]
-async fn get_last_logs(state: tauri::State<'_, AppState>) -> Result<Vec<ScanLog>, String> {
-    let logs = state.last_logs.read().await;
-    Ok(logs.clone())
-}
-
-#[tauri::command]
-async fn update_config(config: ScanConfig, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut current_config = state.config.lock().unwrap();
-    *current_config = config;
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_config(state: tauri::State<'_, AppState>) -> Result<ScanConfig, String> {
-    let config = state.config.lock().unwrap();
-    Ok(config.clone())
+async fn health_handler() -> impl Responder {
+    HttpResponse::Ok().body("Arbitrage Scanner is running with Binance, Bybit, and KuCoin support")
 }
 
 // ==================== Main ====================
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     env_logger::init();
     
-    let detector = Arc::new(ArbitrageDetector::new());
-    let config = ScanConfig::default();
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let bind_addr = format!("0.0.0.0:{}", port);
     
-    tauri::Builder::default()
-        .manage(AppState {
-            detector: Arc::clone(&detector),
-            last_scan_results: Arc::new(RwLock::new(Vec::new())),
-            last_summaries: Arc::new(RwLock::new(Vec::new())),
-            last_logs: Arc::new(RwLock::new(Vec::new())),
-            config: Mutex::new(config),
-        })
-        .invoke_handler(tauri::generate_handler![
-            scan_now,
-            get_last_results,
-            get_last_logs,
-            update_config,
-            get_config,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    println!("Starting arbitrage scanner server on {}", bind_addr);
+    println!("Supported exchanges: binance, bybit, kucoin");
     
-    Ok(())
+    HttpServer::new(|| {
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header();
+            
+        App::new()
+            .wrap(cors)
+            .route("/health", web::get().to(health_handler))
+            .route("/scan", web::post().to(scan_handler))
+    })
+    .bind(&bind_addr)?
+    .run()
+    .await
 }
 ```
-                             
+                                           
