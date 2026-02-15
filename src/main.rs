@@ -1,4 +1,4 @@
-// src/main.rs - Complete Backend with Binance, Bybit, AND KuCoin
+// src/main.rs - Backend API only
 #![warn(clippy::all)]
 
 use actix_web::{web, App, HttpServer, HttpResponse, Responder};
@@ -60,7 +60,7 @@ pub struct ScanResponse {
     pub logs: Vec<ScanLog>,
 }
 
-// ==================== Binance WebSocket Collector ====================
+// ==================== WebSocket Collectors ====================
 
 pub struct BinanceWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
@@ -78,7 +78,6 @@ impl BinanceWebSocketCollector {
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
         
-        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -96,7 +95,6 @@ impl BinanceWebSocketCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        // Spawn WebSocket connection
         tokio::spawn(async move {
             let ws_url = "wss://stream.binance.com:9443/ws/!ticker@arr";
             
@@ -203,8 +201,6 @@ impl BinanceWebSocketCollector {
     }
 }
 
-// ==================== Bybit WebSocket Collector (COMPLETE) ====================
-
 pub struct BybitWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -221,7 +217,6 @@ impl BybitWebSocketCollector {
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
         
-        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -246,7 +241,6 @@ impl BybitWebSocketCollector {
                 Ok((ws_stream, _)) => {
                     let (mut write, mut read) = ws_stream.split();
                     
-                    // Subscribe to tickers
                     let subscribe_msg = serde_json::json!({
                         "op": "subscribe",
                         "args": ["tickers"]
@@ -282,15 +276,6 @@ impl BybitWebSocketCollector {
                                                         let mut data_map = data_clone.lock().await;
                                                         data_map.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
                                                         pair_count += 1;
-                                                        
-                                                        if pair_count % 50 == 0 {
-                                                            let _ = logs_clone.lock().await.push(ScanLog {
-                                                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                                exchange: "bybit".to_string(),
-                                                                message: format!("Bybit collected {} pairs...", pair_count),
-                                                                level: "debug".to_string(),
-                                                            });
-                                                        }
                                                     }
                                                 }
                                             }
@@ -358,8 +343,6 @@ impl BybitWebSocketCollector {
     }
 }
 
-// ==================== KuCoin WebSocket Collector (COMPLETE) ====================
-
 pub struct KuCoinWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -376,7 +359,6 @@ impl KuCoinWebSocketCollector {
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
         
-        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -395,7 +377,6 @@ impl KuCoinWebSocketCollector {
         let logs_clone = self.logs.clone();
 
         tokio::spawn(async move {
-            // First get WebSocket token from KuCoin REST API
             let client = reqwest::Client::new();
             let token_url = "https://api.kucoin.com/api/v1/bullet-public";
             
@@ -412,7 +393,6 @@ impl KuCoinWebSocketCollector {
                                 Ok((ws_stream, _)) => {
                                     let (mut write, mut read) = ws_stream.split();
                                     
-                                    // Subscribe to all tickers
                                     let subscribe_msg = serde_json::json!({
                                         "id": 1,
                                         "type": "subscribe",
@@ -451,15 +431,6 @@ impl KuCoinWebSocketCollector {
                                                                         let mut data_map = data_clone.lock().await;
                                                                         data_map.insert(symbol.to_string(), (bestBid, bestAsk, chrono::Utc::now().timestamp_millis()));
                                                                         pair_count += 1;
-                                                                        
-                                                                        if pair_count % 50 == 0 {
-                                                                            let _ = logs_clone.lock().await.push(ScanLog {
-                                                                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                                                exchange: "kucoin".to_string(),
-                                                                                message: format!("KuCoin collected {} pairs...", pair_count),
-                                                                                level: "debug".to_string(),
-                                                                            });
-                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -501,21 +472,7 @@ impl KuCoinWebSocketCollector {
                                     });
                                 }
                             }
-                        } else {
-                            let _ = logs_clone.lock().await.push(ScanLog {
-                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                exchange: "kucoin".to_string(),
-                                message: "Failed to parse KuCoin WebSocket token".to_string(),
-                                level: "error".to_string(),
-                            });
                         }
-                    } else {
-                        let _ = logs_clone.lock().await.push(ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "kucoin".to_string(),
-                            message: "Failed to parse KuCoin token response".to_string(),
-                            level: "error".to_string(),
-                        });
                     }
                 }
                 Err(e) => {
@@ -850,12 +807,6 @@ async fn health_handler() -> impl Responder {
     HttpResponse::Ok().body("Arbitrage Scanner API is running with Binance, Bybit, and KuCoin support")
 }
 
-async fn index_handler() -> impl Responder {
-    HttpResponse::Ok()
-        .content_type("text/html")
-        .body(include_str!("../static/index.html"))
-}
-
 // ==================== Main ====================
 
 #[actix_web::main]
@@ -866,8 +817,8 @@ async fn main() -> std::io::Result<()> {
     let bind_addr = format!("0.0.0.0:{}", port);
     
     println!("Starting arbitrage scanner backend on {}", bind_addr);
-    println!("Supported exchanges: binance, bybit, kucoin");
-    println!("Open your browser to http://localhost:{}", port);
+    println!("API endpoints: /health, /api/scan (POST)");
+    println!("Frontend serving from ./static directory");
     
     HttpServer::new(|| {
         let cors = Cors::default()
@@ -877,13 +828,11 @@ async fn main() -> std::io::Result<()> {
             
         App::new()
             .wrap(cors)
-            .route("/", web::get().to(index_handler))
+            .service(fs::Files::new("/", "./static").index_file("index.html"))
             .route("/health", web::get().to(health_handler))
             .route("/api/scan", web::post().to(scan_handler))
-            .service(fs::Files::new("/pkg", "./pkg").show_files_listing())
     })
     .bind(&bind_addr)?
     .run()
     .await
-}
-                                                     
+ }
