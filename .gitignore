@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Tauri
+/src-tauri/target
+/src-tauri/gen
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+*.dmg
+*.msi
+*.deb
+*.app
+*.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
