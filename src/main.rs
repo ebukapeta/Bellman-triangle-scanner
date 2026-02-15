@@ -1,8 +1,9 @@
-// src/main.rs - Complete with Binance, Bybit, AND KuCoin
+// src/main.rs - Complete Backend with Binance, Bybit, AND KuCoin
 #![warn(clippy::all)]
 
 use actix_web::{web, App, HttpServer, HttpResponse, Responder};
 use actix_cors::Cors;
+use actix_files as fs;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -59,7 +60,7 @@ pub struct ScanResponse {
     pub logs: Vec<ScanLog>,
 }
 
-// ==================== WebSocket Collectors ====================
+// ==================== Binance WebSocket Collector ====================
 
 pub struct BinanceWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
@@ -87,7 +88,7 @@ impl BinanceWebSocketCollector {
         logs.push(ScanLog {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             exchange: "binance".to_string(),
-            message: format!("Starting WebSocket collection for {} seconds", duration_secs),
+            message: format!("Starting Binance WebSocket collection for {} seconds", duration_secs),
             level: "info".to_string(),
         });
         drop(logs);
@@ -106,7 +107,7 @@ impl BinanceWebSocketCollector {
                     let _ = logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "binance".to_string(),
-                        message: "WebSocket connected successfully".to_string(),
+                        message: "Binance WebSocket connected successfully".to_string(),
                         level: "success".to_string(),
                     });
 
@@ -119,7 +120,7 @@ impl BinanceWebSocketCollector {
                                 Ok(Message::Text(text)) => {
                                     if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
                                         if let Some(symbol) = ticker_data["s"].as_str() {
-                                            if symbol.ends_with("USDT") || symbol.ends_with("BUSD") {
+                                            if symbol.ends_with("USDT") || symbol.ends_with("BUSD") || symbol.ends_with("USDC") {
                                                 if let (Some(bid), Some(ask)) = (
                                                     ticker_data["b"].as_str().and_then(|s| s.parse::<f64>().ok()),
                                                     ticker_data["a"].as_str().and_then(|s| s.parse::<f64>().ok()),
@@ -132,7 +133,7 @@ impl BinanceWebSocketCollector {
                                                         let _ = logs_clone.lock().await.push(ScanLog {
                                                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                                                             exchange: "binance".to_string(),
-                                                            message: format!("Collected {} pairs...", pair_count),
+                                                            message: format!("Binance collected {} pairs...", pair_count),
                                                             level: "debug".to_string(),
                                                         });
                                                     }
@@ -148,7 +149,7 @@ impl BinanceWebSocketCollector {
                                     let _ = logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "binance".to_string(),
-                                        message: format!("WebSocket error: {}", e),
+                                        message: format!("Binance WebSocket error: {}", e),
                                         level: "error".to_string(),
                                     });
                                     break;
@@ -163,7 +164,7 @@ impl BinanceWebSocketCollector {
                     let _ = logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "binance".to_string(),
-                        message: format!("Collection complete. Total pairs: {}", pair_count),
+                        message: format!("Binance collection complete. Total pairs: {}", pair_count),
                         level: "success".to_string(),
                     });
                 }
@@ -171,7 +172,7 @@ impl BinanceWebSocketCollector {
                     let _ = logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "binance".to_string(),
-                        message: format!("Connection failed: {}", e),
+                        message: format!("Binance connection failed: {}", e),
                         level: "error".to_string(),
                     });
                 }
@@ -202,6 +203,8 @@ impl BinanceWebSocketCollector {
     }
 }
 
+// ==================== Bybit WebSocket Collector (COMPLETE) ====================
+
 pub struct BybitWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -218,6 +221,7 @@ impl BybitWebSocketCollector {
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
         
+        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -227,7 +231,7 @@ impl BybitWebSocketCollector {
         logs.push(ScanLog {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             exchange: "bybit".to_string(),
-            message: format!("Starting WebSocket collection for {} seconds", duration_secs),
+            message: format!("Starting Bybit WebSocket collection for {} seconds", duration_secs),
             level: "info".to_string(),
         });
         drop(logs);
@@ -255,7 +259,7 @@ impl BybitWebSocketCollector {
                     let _ = logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
-                        message: "WebSocket connected and subscribed".to_string(),
+                        message: "Bybit WebSocket connected and subscribed".to_string(),
                         level: "success".to_string(),
                     });
 
@@ -274,9 +278,20 @@ impl BybitWebSocketCollector {
                                                     data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                     data.get("ask1Price").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                 ) {
-                                                    let mut data_map = data_clone.lock().await;
-                                                    data_map.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
-                                                    pair_count += 1;
+                                                    if symbol.ends_with("USDT") {
+                                                        let mut data_map = data_clone.lock().await;
+                                                        data_map.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
+                                                        pair_count += 1;
+                                                        
+                                                        if pair_count % 50 == 0 {
+                                                            let _ = logs_clone.lock().await.push(ScanLog {
+                                                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                                                exchange: "bybit".to_string(),
+                                                                message: format!("Bybit collected {} pairs...", pair_count),
+                                                                level: "debug".to_string(),
+                                                            });
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -289,7 +304,7 @@ impl BybitWebSocketCollector {
                                     let _ = logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "bybit".to_string(),
-                                        message: format!("WebSocket error: {}", e),
+                                        message: format!("Bybit WebSocket error: {}", e),
                                         level: "error".to_string(),
                                     });
                                     break;
@@ -304,7 +319,7 @@ impl BybitWebSocketCollector {
                     let _ = logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
-                        message: format!("Collection complete. Total pairs: {}", pair_count),
+                        message: format!("Bybit collection complete. Total pairs: {}", pair_count),
                         level: "success".to_string(),
                     });
                 }
@@ -312,7 +327,7 @@ impl BybitWebSocketCollector {
                     let _ = logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
-                        message: format!("Connection failed: {}", e),
+                        message: format!("Bybit connection failed: {}", e),
                         level: "error".to_string(),
                     });
                 }
@@ -343,7 +358,8 @@ impl BybitWebSocketCollector {
     }
 }
 
-// KuCoin WebSocket Collector
+// ==================== KuCoin WebSocket Collector (COMPLETE) ====================
+
 pub struct KuCoinWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -360,6 +376,7 @@ impl KuCoinWebSocketCollector {
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
         
+        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -369,7 +386,7 @@ impl KuCoinWebSocketCollector {
         logs.push(ScanLog {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             exchange: "kucoin".to_string(),
-            message: format!("Starting WebSocket collection for {} seconds", duration_secs),
+            message: format!("Starting KuCoin WebSocket collection for {} seconds", duration_secs),
             level: "info".to_string(),
         });
         drop(logs);
@@ -411,7 +428,7 @@ impl KuCoinWebSocketCollector {
                                     let _ = logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "kucoin".to_string(),
-                                        message: "WebSocket connected and subscribed".to_string(),
+                                        message: "KuCoin WebSocket connected and subscribed".to_string(),
                                         level: "success".to_string(),
                                     });
 
@@ -434,6 +451,15 @@ impl KuCoinWebSocketCollector {
                                                                         let mut data_map = data_clone.lock().await;
                                                                         data_map.insert(symbol.to_string(), (bestBid, bestAsk, chrono::Utc::now().timestamp_millis()));
                                                                         pair_count += 1;
+                                                                        
+                                                                        if pair_count % 50 == 0 {
+                                                                            let _ = logs_clone.lock().await.push(ScanLog {
+                                                                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                                                                exchange: "kucoin".to_string(),
+                                                                                message: format!("KuCoin collected {} pairs...", pair_count),
+                                                                                level: "debug".to_string(),
+                                                                            });
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -447,7 +473,7 @@ impl KuCoinWebSocketCollector {
                                                     let _ = logs_clone.lock().await.push(ScanLog {
                                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                                         exchange: "kucoin".to_string(),
-                                                        message: format!("WebSocket error: {}", e),
+                                                        message: format!("KuCoin WebSocket error: {}", e),
                                                         level: "error".to_string(),
                                                     });
                                                     break;
@@ -462,7 +488,7 @@ impl KuCoinWebSocketCollector {
                                     let _ = logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "kucoin".to_string(),
-                                        message: format!("Collection complete. Total pairs: {}", pair_count),
+                                        message: format!("KuCoin collection complete. Total pairs: {}", pair_count),
                                         level: "success".to_string(),
                                     });
                                 }
@@ -470,26 +496,40 @@ impl KuCoinWebSocketCollector {
                                     let _ = logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "kucoin".to_string(),
-                                        message: format!("WebSocket connection failed: {}", e),
+                                        message: format!("KuCoin WebSocket connection failed: {}", e),
                                         level: "error".to_string(),
                                     });
                                 }
                             }
+                        } else {
+                            let _ = logs_clone.lock().await.push(ScanLog {
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                exchange: "kucoin".to_string(),
+                                message: "Failed to parse KuCoin WebSocket token".to_string(),
+                                level: "error".to_string(),
+                            });
                         }
+                    } else {
+                        let _ = logs_clone.lock().await.push(ScanLog {
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            exchange: "kucoin".to_string(),
+                            message: "Failed to parse KuCoin token response".to_string(),
+                            level: "error".to_string(),
+                        });
                     }
                 }
                 Err(e) => {
                     let _ = logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "kucoin".to_string(),
-                        message: format!("Failed to get WebSocket token: {}", e),
+                        message: format!("Failed to get KuCoin WebSocket token: {}", e),
                         level: "error".to_string(),
                     });
                 }
             }
         });
 
-        tokio::time::sleep(Duration::from_secs(duration_secs + 2)).await;
+        tokio::time::sleep(Duration::from_secs(duration_secs + 3)).await;
 
         let final_data = self.collected_data.lock().await;
         let pairs_collected = final_data.len();
@@ -751,7 +791,6 @@ impl ArbitrageDetector {
         let (graph, node_indices) = self.build_graph(&tickers);
         let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
 
-        // Set the exchange name for each opportunity
         for opp in &mut opportunities {
             opp.exchange = exchange.to_string();
         }
@@ -787,7 +826,7 @@ impl ArbitrageDetector {
     }
 }
 
-// ==================== HTTP Handlers ====================
+// ==================== API Handlers ====================
 
 async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
     println!("Received scan request for exchanges: {:?}", req.exchanges);
@@ -808,7 +847,13 @@ async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
 }
 
 async fn health_handler() -> impl Responder {
-    HttpResponse::Ok().body("Arbitrage Scanner is running with Binance, Bybit, and KuCoin support")
+    HttpResponse::Ok().body("Arbitrage Scanner API is running with Binance, Bybit, and KuCoin support")
+}
+
+async fn index_handler() -> impl Responder {
+    HttpResponse::Ok()
+        .content_type("text/html")
+        .body(include_str!("../static/index.html"))
 }
 
 // ==================== Main ====================
@@ -820,8 +865,9 @@ async fn main() -> std::io::Result<()> {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let bind_addr = format!("0.0.0.0:{}", port);
     
-    println!("Starting arbitrage scanner server on {}", bind_addr);
+    println!("Starting arbitrage scanner backend on {}", bind_addr);
     println!("Supported exchanges: binance, bybit, kucoin");
+    println!("Open your browser to http://localhost:{}", port);
     
     HttpServer::new(|| {
         let cors = Cors::default()
@@ -831,10 +877,13 @@ async fn main() -> std::io::Result<()> {
             
         App::new()
             .wrap(cors)
+            .route("/", web::get().to(index_handler))
             .route("/health", web::get().to(health_handler))
-            .route("/scan", web::post().to(scan_handler))
+            .route("/api/scan", web::post().to(scan_handler))
+            .service(fs::Files::new("/pkg", "./pkg").show_files_listing())
     })
     .bind(&bind_addr)?
     .run()
     .await
 }
+                                                     
