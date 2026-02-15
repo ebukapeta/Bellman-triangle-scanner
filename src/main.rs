@@ -25,11 +25,11 @@ fn log_scan_activity(message: &str) {
     let timestamp = chrono::Utc::now().to_rfc3339();
     let log_line = format!("[{}] {}\n", timestamp, message);
 
-    // 1️⃣ Log to stdout (Render captures this automatically)
+    // log to stdout for Render
     println!("{}", log_line);
 
-    // 2️⃣ Optional: log to a local file if writable, but ignore errors
-    if let Ok(mut file) = std::fs::OpenOptions::new()
+    // log to file (ignore errors)
+    if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
         .open("scanner_activity.log") 
@@ -128,11 +128,9 @@ async fn collect_pairs_binance(duration_secs:u64) -> HashMap<String, OrderBook> 
     let mut pairs = HashMap::new();
     log_scan_activity("Connecting to Binance WS");
 
-    // 1️⃣ Connect
     let (mut ws, _) = connect_async("wss://stream.binance.com:9443/ws").await
         .expect("Failed to connect to Binance WS");
 
-    // 2️⃣ Subscribe to ALL USDT pairs dynamically (simplified demo: still can hardcode some)
     let symbols = vec!["BTCUSDT", "ETHUSDT", "ETHBTC"];
     for sym in &symbols {
         let sub = serde_json::json!({
@@ -140,12 +138,9 @@ async fn collect_pairs_binance(duration_secs:u64) -> HashMap<String, OrderBook> 
             "params": [format!("{}@depth5@100ms", sym.to_lowercase())],
             "id": 1
         });
-        if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
-            log_scan_activity(&format!("WS send error: {}", e));
-        }
+        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await;
     }
 
-    // 3️⃣ Collect messages safely
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < duration_secs {
         if let Some(msg) = ws.next().await {
@@ -166,8 +161,7 @@ async fn collect_pairs_binance(duration_secs:u64) -> HashMap<String, OrderBook> 
                         }
                     }
                 }
-                Ok(_) => {}
-                Err(e) => log_scan_activity(&format!("WS read error: {}", e)),
+                _ => {}
             }
         }
     }
@@ -185,42 +179,35 @@ async fn collect_pairs_bybit(duration_secs:u64) -> HashMap<String, OrderBook> {
         .await
         .expect("Failed to connect Bybit WS");
 
-    // Subscribe to top pairs
     let symbols = vec!["BTCUSDT", "ETHUSDT"];
     for sym in &symbols {
         let sub = serde_json::json!({
             "op": "subscribe",
             "args": [format!("orderBookL2_25.{}", sym)]
         });
-        if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
-            log_scan_activity(&format!("Bybit WS send error: {}", e));
-        }
+        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await;
     }
 
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < duration_secs {
         if let Some(msg) = ws.next().await {
-            match msg {
-                Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) => {
-                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                        if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
-                            for item in data {
-                                if let (Some(symbol), Some(price), Some(size), Some(side)) = (
-                                    item.get("symbol").and_then(|x| x.as_str()),
-                                    item.get("price").and_then(|x| x.as_str()).and_then(|x| x.parse::<f64>().ok()),
-                                    item.get("size").and_then(|x| x.as_f64()),
-                                    item.get("side").and_then(|x| x.as_str())
-                                ) {
-                                    let entry = pairs.entry(symbol.to_string()).or_insert(OrderBook { bid:0.0, ask:0.0, bid_vol:0.0, ask_vol:0.0 });
-                                    if side=="Buy" { entry.bid=price; entry.bid_vol=size; }
-                                    if side=="Sell" { entry.ask=price; entry.ask_vol=size; }
-                                }
+            if let Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) = msg {
+                if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                    if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                        for item in data {
+                            if let (Some(symbol), Some(price), Some(size), Some(side)) = (
+                                item.get("symbol").and_then(|x| x.as_str()),
+                                item.get("price").and_then(|x| x.as_str()).and_then(|x| x.parse::<f64>().ok()),
+                                item.get("size").and_then(|x| x.as_f64()),
+                                item.get("side").and_then(|x| x.as_str())
+                            ) {
+                                let entry = pairs.entry(symbol.to_string()).or_insert(OrderBook { bid:0.0, ask:0.0, bid_vol:0.0, ask_vol:0.0 });
+                                if side=="Buy" { entry.bid=price; entry.bid_vol=size; }
+                                if side=="Sell" { entry.ask=price; entry.ask_vol=size; }
                             }
                         }
                     }
                 }
-                Ok(_) => {}
-                Err(e) => log_scan_activity(&format!("Bybit WS read error: {}", e)),
             }
         }
     }
@@ -234,7 +221,6 @@ async fn collect_pairs_kucoin(duration_secs:u64) -> HashMap<String, OrderBook> {
     let mut pairs = HashMap::new();
     log_scan_activity("Connecting KuCoin WS");
 
-    // Example: connect to KuCoin WS endpoint (replace <TOKEN> with your actual token from REST)
     let ws_url = "wss://push1-v2.kucoin.com/endpoint?token=<TOKEN>";
     let (mut ws, _) = connect_async(ws_url)
         .await
@@ -248,33 +234,35 @@ async fn collect_pairs_kucoin(duration_secs:u64) -> HashMap<String, OrderBook> {
             "topic": format!("/market/level2:{}", sym),
             "response": true
         });
-        if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
-            log_scan_activity(&format!("KuCoin WS send error: {}", e));
-        }
+        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await;
     }
 
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < duration_secs {
         if let Some(msg) = ws.next().await {
-            match msg {
-                Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) => {
-                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                        if let Some(data) = v.get("data") {
-                            let symbol = data.get("s").and_then(|x| x.as_str()).unwrap_or_default();
-                            let bids = data.get("b").and_then(|b| b.as_array()).unwrap_or(&vec![]);
-                            let asks = data.get("a").and_then(|a| a.as_array()).unwrap_or(&vec![]);
-                            if !bids.is_empty() && !asks.is_empty() {
-                                let bid = bids[0][0].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
-                                let bid_vol = bids[0][1].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
-                                let ask = asks[0][0].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
-                                let ask_vol = asks[0][1].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
-                                pairs.insert(symbol.to_string(), OrderBook { bid, ask, bid_vol, ask_vol });
-                            }
-                        }
+            if let Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) = msg {
+                if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                    if let Some(data) = v.get("data") {
+                        // ✅ PATCHED: safe borrows to avoid temporary value
+                        let symbol = match data.get("s").and_then(|x| x.as_str()) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        let bids = match data.get("b").and_then(|b| b.as_array()) {
+                            Some(b) if !b.is_empty() => b,
+                            _ => continue,
+                        };
+                        let asks = match data.get("a").and_then(|a| a.as_array()) {
+                            Some(a) if !a.is_empty() => a,
+                            _ => continue,
+                        };
+                        let bid = bids[0][0].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                        let bid_vol = bids[0][1].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                        let ask = asks[0][0].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                        let ask_vol = asks[0][1].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                        pairs.insert(symbol.to_string(), OrderBook { bid, ask, bid_vol, ask_vol });
                     }
                 }
-                Ok(_) => {}
-                Err(e) => log_scan_activity(&format!("KuCoin WS read error: {}", e)),
             }
         }
     }
@@ -349,151 +337,93 @@ Html(r#"<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Real-Time DEX Arbitrage Scanner</title>
+<title>Triangular Arbitrage Scanner</title>
 <script src="https://cdn.tailwindcss.com"></script>
-
 <style>
-body { background:#020617; color:#e5e7eb; font-family:system-ui; }
-.card { background:#020617; border:1px solid #1e293b; border-radius:10px; padding:20px; }
-button { transition: all 0.2s ease; }
-button:hover { transform: scale(1.02); }
-.status-dot {
-    width:10px; height:10px; border-radius:50%;
-    display:inline-block; margin-right:6px;
-}
-.status-idle { background:#64748b; }
-.status-run { background:#22c55e; animation:pulse 1s infinite; }
-@keyframes pulse {
-    0% { opacity:1 } 50% { opacity:0.4 } 100% { opacity:1 }
-}
-table { width:100%; border-collapse: collapse; }
-th, td { padding:10px; border-bottom:1px solid #1e293b; text-align:center; }
-th { background:#020617; }
-tr:hover { background:#020617; }
+body { background:#0f172a; color:white; font-family:Arial,sans-serif; }
+button { padding:12px 24px; font-size:16px; margin-top:10px; }
+table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+th, td { border: 1px solid #555; padding: 8px; text-align: center; }
+th { background-color: #1e293b; }
+tr:nth-child(even) { background-color: #1e293b; }
+tr:nth-child(odd) { background-color: #0f172a; }
 </style>
 </head>
-
-<body class="p-6">
-
-<div class="max-w-5xl mx-auto">
-
-<h1 class="text-2xl font-bold mb-4">Triangular Arbitrage Scanner</h1>
-
-<div class="card mb-4">
-
-<div class="flex flex-wrap gap-6 items-center">
-
-<div>
-<label class="font-semibold">Exchanges</label><br>
-<label><input type="checkbox" value="binance" checked> Binance</label><br>
-<label><input type="checkbox" value="bybit" checked> Bybit</label><br>
-<label><input type="checkbox" value="kucoin" checked> KuCoin</label>
+<body class='p-4'>
+<h1 class='text-2xl font-bold mb-4'>Triangular Arbitrage Scanner</h1>
+<div class='mb-4'>
+<label class='font-bold mr-2'>Select Exchanges:</label><br>
+<label><input type='checkbox' value='binance' checked> Binance</label><br>
+<label><input type='checkbox' value='bybit' checked> Bybit</label><br>
+<label><input type='checkbox' value='kucoin' checked> KuCoin</label>
 </div>
-
-<div>
-<label class="font-semibold">Min Profit %</label><br>
-<input id="min_profit" type="number" value="0.3" step="0.1"
-class="bg-black border border-slate-700 rounded px-3 py-2 w-24">
+<div class='mb-4'>
+<label class='mr-2 font-bold'>Min Profit %:</label>
+<input type='number' id='min_profit' value='0.3' step='0.1' class='bg-gray-800 p-2 rounded w-20'>
 </div>
-
-<div>
-<button onclick="runScan()"
-class="bg-blue-600 px-6 py-3 rounded font-semibold">
-Run Scan
-</button>
-</div>
-
-<div class="ml-auto text-sm">
-<span id="statusDot" class="status-dot status-idle"></span>
-<span id="statusText">Idle</span>
-</div>
-
-</div>
-</div>
-
-<div class="card">
-<div id="results">No scan executed yet.</div>
-</div>
-
-</div>
-
+<button onclick='runScan()' class='bg-blue-600 p-2 rounded'>Run Scan</button>
+<div id='results' class='mt-4'></div>
 <script>
-async function runScan() {
-
-    const dot = document.getElementById("statusDot");
-    const status = document.getElementById("statusText");
-    const results = document.getElementById("results");
-
-    dot.className = "status-dot status-run";
-    status.textContent = "Scanning...";
-    results.innerHTML = "Scanning exchanges...";
-
-    const exchanges = Array.from(
-        document.querySelectorAll("input[type=checkbox]:checked")
-    ).map(e => e.value);
-
+async function runScan(){
+    const checkboxes = document.querySelectorAll("input[type=checkbox]:checked");
+    const selectedEx = Array.from(checkboxes).map(c => c.value);
     const minProfit = document.getElementById("min_profit").value;
-
+    const resDiv = document.getElementById("results");
+    resDiv.innerHTML = "<p>Scanning, please wait...</p>";
     try {
-        const url = `/scan?exchanges=${exchanges.join(",")}&min_profit=${minProfit}`;
-        const res = await fetch(url);
-        const data = await res.json();
-
-        dot.className = "status-dot status-idle";
-        status.textContent = "Idle";
-
-        if (!data.opportunities || data.opportunities.length === 0) {
-            results.innerHTML = "<p>No arbitrage opportunities found</p>";
+        const url = '/scan?exchanges=' + selectedEx.join(',') + '&min_profit=' + minProfit;
+        const response = await fetch(url);
+        const data = await response.json();
+        if(!data.opportunities || data.opportunities.length===0){
+            resDiv.innerHTML = "<p>No arbitrage opportunities found</p>";
             return;
         }
-
-        let html = `
-        <table>
+        let html = `<table>
         <thead>
-        <tr>
-            <th>Exchange</th>
-            <th>Triangle</th>
-            <th>Direction</th>
-            <th>Profit %</th>
-            <th>Confidence</th>
-        </tr>
+            <tr>
+                <th>Exchange</th>
+                <th>Triangle Path</th>
+                <th>Direction</th>
+                <th>Profit %</th>
+                <th>Confidence %</th>
+            </tr>
         </thead>
         <tbody>`;
-
-        data.opportunities.forEach(o => {
-            html += `
-            <tr>
+        data.opportunities.forEach(o=>{
+            html += `<tr>
                 <td>${o.exchange}</td>
-                <td>${o.triangle.join(" → ")}</td>
+                <td>${o.triangle.join(' → ')}</td>
                 <td>${o.direction}</td>
                 <td>${o.profit_percent.toFixed(4)}</td>
-                <td>${o.confidence.toFixed(1)}%</td>
+                <td>${o.confidence.toFixed(1)}</td>
             </tr>`;
         });
-
-        html += "</tbody></table>";
-        results.innerHTML = html;
-
-    } catch (err) {
-        dot.className = "status-dot status-idle";
-        status.textContent = "Error";
-        results.innerHTML = "<p style='color:#f87171'>Scanner connection failed</p>";
+        html += `</tbody></table>`;
+        resDiv.innerHTML = html;
+    } catch(err){
+        resDiv.innerHTML = "<p style='color:red'>Scanner connection failed.</p>";
+        console.error(err);
     }
 }
 </script>
-
 </body>
 </html>"#)
 }
 
 /* ================= SERVER ================= */
 #[tokio::main]
-async fn main(){
+async fn main() {
     log_scan_activity("Scanner service started");
-    let app=Router::new()
+
+    let app = Router::new()
         .route("/", get(ui))
         .route("/scan", get(scan_handler));
 
-    let listener=tokio::net::TcpListener::bind("0.0.0.0:10000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-             }
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:10000")
+        .await
+        .expect("Failed to bind port");
+
+    axum::serve(listener, app)
+        .await
+        .expect("Server failed");
+}
