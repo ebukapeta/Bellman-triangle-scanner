@@ -124,137 +124,162 @@ fn evaluate_cycle(graph: &Graph, cycle: &Vec<String>) -> (f64,String,f64) {
 }
 
 /* ================= BINANCE WS ================= */
-async fn collect_pairs_binance(duration_secs: u64) -> HashMap<String, OrderBook> {
+async fn collect_pairs_binance(duration_secs:u64) -> HashMap<String, OrderBook> {
     let mut pairs = HashMap::new();
-
     log_scan_activity("Connecting to Binance WS");
 
-    let ws_conn = connect_async("wss://stream.binance.com:9443/ws").await;
-    if ws_conn.is_err() {
-        log_scan_activity("Binance WS connection failed");
-        return pairs;
-    }
+    // 1️⃣ Connect
+    let (mut ws, _) = connect_async("wss://stream.binance.com:9443/ws").await
+        .expect("Failed to connect to Binance WS");
 
-    let (mut ws, _) = ws_conn.unwrap();
-
-    let symbols = vec!["btcusdt", "ethusdt", "ethbtc"];
-
+    // 2️⃣ Subscribe to ALL USDT pairs dynamically (simplified demo: still can hardcode some)
+    let symbols = vec!["BTCUSDT", "ETHUSDT", "ETHBTC"];
     for sym in &symbols {
         let sub = serde_json::json!({
             "method": "SUBSCRIBE",
-            "params": [format!("{}@depth5", sym)],
+            "params": [format!("{}@depth5@100ms", sym.to_lowercase())],
             "id": 1
         });
-
-        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await;
+        if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
+            log_scan_activity(&format!("WS send error: {}", e));
+        }
     }
 
+    // 3️⃣ Collect messages safely
     let start = std::time::Instant::now();
-
     while start.elapsed().as_secs() < duration_secs {
         if let Some(msg) = ws.next().await {
-            if let Ok(message) = msg {
-                if let Ok(text) = message.to_text() {
-                    if let Ok(v) = serde_json::from_str::<Value>(text) {
-
-                        let symbol = v.get("s").and_then(|x| x.as_str());
-                        let bid = v.get("bids")
-                            .and_then(|b| b.get(0))
-                            .and_then(|x| x.get(0))
-                            .and_then(|x| x.as_str())
-                            .and_then(|x| x.parse::<f64>().ok());
-
-                        let ask = v.get("asks")
-                            .and_then(|b| b.get(0))
-                            .and_then(|x| x.get(0))
-                            .and_then(|x| x.as_str())
-                            .and_then(|x| x.parse::<f64>().ok());
-
-                        let bid_vol = v.get("bids")
-                            .and_then(|b| b.get(0))
-                            .and_then(|x| x.get(1))
-                            .and_then(|x| x.as_str())
-                            .and_then(|x| x.parse::<f64>().ok());
-
-                        let ask_vol = v.get("asks")
-                            .and_then(|b| b.get(0))
-                            .and_then(|x| x.get(1))
-                            .and_then(|x| x.as_str())
-                            .and_then(|x| x.parse::<f64>().ok());
-
-                        if let (Some(s), Some(b), Some(a), Some(bv), Some(av)) =
-                            (symbol, bid, ask, bid_vol, ask_vol)
-                        {
-                            pairs.insert(
-                                s.to_uppercase(),
-                                OrderBook { bid: b, ask: a, bid_vol: bv, ask_vol: av }
-                            );
+            match msg {
+                Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) => {
+                    if txt.contains("bids") && txt.contains("asks") {
+                        if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                            if let Some(s) = v.get("s").and_then(|x| x.as_str()) {
+                                if let (Some(bid), Some(ask)) = (
+                                    v.get("bids").and_then(|b| b[0].get(0).and_then(|x| x.as_str()).and_then(|x| x.parse::<f64>().ok())),
+                                    v.get("asks").and_then(|a| a[0].get(0).and_then(|x| x.as_str()).and_then(|x| x.parse::<f64>().ok())),
+                                ) {
+                                    let bid_vol = v.get("bids").and_then(|b| b[0].get(1).and_then(|x| x.as_str()).and_then(|x| x.parse::<f64>().ok())).unwrap_or(0.0);
+                                    let ask_vol = v.get("asks").and_then(|a| a[0].get(1).and_then(|x| x.as_str()).and_then(|x| x.parse::<f64>().ok())).unwrap_or(0.0);
+                                    pairs.insert(s.to_string(), OrderBook { bid, ask, bid_vol, ask_vol });
+                                }
+                            }
                         }
                     }
                 }
+                Ok(_) => {}
+                Err(e) => log_scan_activity(&format!("WS read error: {}", e)),
             }
         }
     }
 
     log_scan_activity(&format!("Binance collected {} pairs", pairs.len()));
-    pairs 
+    pairs
 }
 
 /* ================= BYBIT WS ================= */
-async fn collect_pairs_bybit(duration:u64)->HashMap<String,OrderBook>{
+async fn collect_pairs_bybit(duration_secs:u64) -> HashMap<String, OrderBook> {
+    let mut pairs = HashMap::new();
     log_scan_activity("Connecting Bybit WS");
-    let url="wss://stream.bybit.com/v5/public/spot";
-    let (mut ws,_)=connect_async(url).await.unwrap();
 
-    let sub=r#"{"op":"subscribe","args":["tickers.BTCUSDT","tickers.ETHUSDT","tickers.ETHBTC"]}"#;
-    ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.into())).await.unwrap();
+    let (mut ws, _) = connect_async("wss://stream.bybit.com/realtime_public")
+        .await
+        .expect("Failed to connect Bybit WS");
 
-    let mut pairs=HashMap::new();
-    let start=std::time::Instant::now();
+    // Subscribe to top pairs
+    let symbols = vec!["BTCUSDT", "ETHUSDT"];
+    for sym in &symbols {
+        let sub = serde_json::json!({
+            "op": "subscribe",
+            "args": [format!("orderBookL2_25.{}", sym)]
+        });
+        if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
+            log_scan_activity(&format!("Bybit WS send error: {}", e));
+        }
+    }
 
-    while start.elapsed().as_secs()<duration {
-        if let Some(msg)=ws.next().await {
-            let txt=msg.unwrap().to_string();
-            if txt.contains("bid1Price") {
-                let v:Value=serde_json::from_str(&txt).unwrap();
-                let sym=v["data"]["symbol"].as_str().unwrap().to_string();
-                let bid=v["data"]["bid1Price"].as_str().unwrap().parse().unwrap();
-                let ask=v["data"]["ask1Price"].as_str().unwrap().parse().unwrap();
-                pairs.insert(sym,OrderBook{bid,ask,bid_vol:10.0,ask_vol:10.0});
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < duration_secs {
+        if let Some(msg) = ws.next().await {
+            match msg {
+                Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) => {
+                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                        if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                            for item in data {
+                                if let (Some(symbol), Some(price), Some(size), Some(side)) = (
+                                    item.get("symbol").and_then(|x| x.as_str()),
+                                    item.get("price").and_then(|x| x.as_str()).and_then(|x| x.parse::<f64>().ok()),
+                                    item.get("size").and_then(|x| x.as_f64()),
+                                    item.get("side").and_then(|x| x.as_str())
+                                ) {
+                                    let entry = pairs.entry(symbol.to_string()).or_insert(OrderBook { bid:0.0, ask:0.0, bid_vol:0.0, ask_vol:0.0 });
+                                    if side=="Buy" { entry.bid=price; entry.bid_vol=size; }
+                                    if side=="Sell" { entry.ask=price; entry.ask_vol=size; }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log_scan_activity(&format!("Bybit WS read error: {}", e)),
             }
         }
     }
 
-    log_scan_activity(&format!("Bybit collected {}",pairs.len()));
+    log_scan_activity(&format!("Bybit collected {} pairs", pairs.len()));
     pairs
 }
 
 /* ================= KUCOIN WS ================= */
-async fn collect_pairs_kucoin(duration:u64)->HashMap<String,OrderBook>{
+async fn collect_pairs_kucoin(duration_secs:u64) -> HashMap<String, OrderBook> {
+    let mut pairs = HashMap::new();
     log_scan_activity("Connecting KuCoin WS");
-    let url="wss://ws-api-spot.kucoin.com";
-    let (mut ws,_)=connect_async(url).await.unwrap();
 
-    let sub=r#"{"type":"subscribe","topic":"/market/ticker:BTC-USDT,ETH-USDT,ETH-BTC"}"#;
-    ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.into())).await.unwrap();
+    // Example: connect to KuCoin WS endpoint (replace <TOKEN> with your actual token from REST)
+    let ws_url = "wss://push1-v2.kucoin.com/endpoint?token=<TOKEN>";
+    let (mut ws, _) = connect_async(ws_url)
+        .await
+        .expect("Failed to connect KuCoin WS");
 
-    let mut pairs=HashMap::new();
-    let start=std::time::Instant::now();
+    let symbols = vec!["BTC-USDT", "ETH-USDT"];
+    for sym in &symbols {
+        let sub = serde_json::json!({
+            "id": "1",
+            "type": "subscribe",
+            "topic": format!("/market/level2:{}", sym),
+            "response": true
+        });
+        if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
+            log_scan_activity(&format!("KuCoin WS send error: {}", e));
+        }
+    }
 
-    while start.elapsed().as_secs()<duration {
-        if let Some(msg)=ws.next().await {
-            let txt=msg.unwrap().to_string();
-            if txt.contains("bestBid") {
-                let v:Value=serde_json::from_str(&txt).unwrap();
-                let sym=v["topic"].as_str().unwrap().split(':').nth(1).unwrap().replace("-","");
-                let bid=v["data"]["bestBid"].as_str().unwrap().parse().unwrap();
-                let ask=v["data"]["bestAsk"].as_str().unwrap().parse().unwrap();
-                pairs.insert(sym,OrderBook{bid,ask,bid_vol:10.0,ask_vol:10.0});
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < duration_secs {
+        if let Some(msg) = ws.next().await {
+            match msg {
+                Ok(tokio_tungstenite::tungstenite::Message::Text(txt)) => {
+                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                        if let Some(data) = v.get("data") {
+                            let symbol = data.get("s").and_then(|x| x.as_str()).unwrap_or_default();
+                            let bids = data.get("b").and_then(|b| b.as_array()).unwrap_or(&vec![]);
+                            let asks = data.get("a").and_then(|a| a.as_array()).unwrap_or(&vec![]);
+                            if !bids.is_empty() && !asks.is_empty() {
+                                let bid = bids[0][0].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                                let bid_vol = bids[0][1].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                                let ask = asks[0][0].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                                let ask_vol = asks[0][1].as_str().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                                pairs.insert(symbol.to_string(), OrderBook { bid, ask, bid_vol, ask_vol });
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log_scan_activity(&format!("KuCoin WS read error: {}", e)),
             }
         }
     }
 
-    log_scan_activity(&format!("KuCoin collected {}",pairs.len()));
+    log_scan_activity(&format!("KuCoin collected {} pairs", pairs.len()));
     pairs
 }
 
