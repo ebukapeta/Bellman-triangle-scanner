@@ -10,8 +10,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 use chrono::{Utc, Local};
 use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::algo::{bellman_ford, NegativeCycle};
-use petgraph::prelude::*;
+use petgraph::algo::bellman_ford;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
@@ -655,7 +654,7 @@ impl ArbitrageDetector {
                         }
                     }
                 }
-                Err(NegativeCycle) => continue,
+                Err(_) => continue,
             }
         }
         
