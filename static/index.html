@@ -382,133 +382,205 @@
     </div>
 
     <script>
-        let selectedExchanges = new Set(['binance', 'bybit', 'kucoin']);
+    let selectedExchanges = new Set(['binance', 'bybit', 'kucoin']);
+    
+    // Exchange checkbox handlers
+    document.getElementById('binance').addEventListener('change', (e) => {
+        if (e.target.checked) selectedExchanges.add('binance');
+        else selectedExchanges.delete('binance');
+    });
+    
+    document.getElementById('bybit').addEventListener('change', (e) => {
+        if (e.target.checked) selectedExchanges.add('bybit');
+        else selectedExchanges.delete('bybit');
+    });
+    
+    document.getElementById('kucoin').addEventListener('change', (e) => {
+        if (e.target.checked) selectedExchanges.add('kucoin');
+        else selectedExchanges.delete('kucoin');
+    });
+    
+    async function checkApiHealth() {
+        try {
+            const response = await fetch('/health');
+            const text = await response.text();
+            console.log('Health check:', text);
+            return response.ok;
+        } catch (error) {
+            console.error('Health check failed:', error);
+            return false;
+        }
+    }
+    
+    document.getElementById('scanBtn').addEventListener('click', async () => {
+        if (selectedExchanges.size === 0) {
+            alert('Please select at least one exchange');
+            return;
+        }
         
-        // Exchange checkbox handlers
-        document.getElementById('binance').addEventListener('change', (e) => {
-            if (e.target.checked) selectedExchanges.add('binance');
-            else selectedExchanges.delete('binance');
-        });
+        // First check if API is reachable
+        const isHealthy = await checkApiHealth();
+        if (!isHealthy) {
+            document.getElementById('status').innerHTML = '❌ API server not responding properly';
+            return;
+        }
         
-        document.getElementById('bybit').addEventListener('change', (e) => {
-            if (e.target.checked) selectedExchanges.add('bybit');
-            else selectedExchanges.delete('bybit');
-        });
+        const minProfit = parseFloat(document.getElementById('minProfit').value);
+        const duration = parseInt(document.getElementById('duration').value);
         
-        document.getElementById('kucoin').addEventListener('change', (e) => {
-            if (e.target.checked) selectedExchanges.add('kucoin');
-            else selectedExchanges.delete('kucoin');
-        });
+        // Update UI
+        document.getElementById('btnText').style.display = 'none';
+        document.getElementById('btnLoader').style.display = 'inline';
+        document.getElementById('scanBtn').disabled = true;
+        document.getElementById('status').innerHTML = `<span class="loading"></span> Collecting data for ${duration} seconds...`;
         
-        document.getElementById('scanBtn').addEventListener('click', async () => {
-            if (selectedExchanges.size === 0) {
-                alert('Please select at least one exchange');
-                return;
+        // Clear previous results
+        document.getElementById('logContainer').innerHTML = '';
+        document.getElementById('summaryGrid').innerHTML = '';
+        document.getElementById('tableBody').innerHTML = '';
+        document.getElementById('logCard').style.display = 'block';
+        document.getElementById('summaryCard').style.display = 'none';
+        document.getElementById('resultsCard').style.display = 'none';
+        
+        try {
+            const requestBody = {
+                exchanges: Array.from(selectedExchanges),
+                min_profit: minProfit,
+                collection_duration: duration
+            };
+            
+            console.log('Sending request:', requestBody);
+            
+            const response = await fetch('/api/scan', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
+            });
+            
+            console.log('Response status:', response.status);
+            console.log('Response headers:', response.headers);
+            
+            // Check if response is OK
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('Error response:', errorText);
+                throw new Error(`Server returned ${response.status}: ${errorText.substring(0, 100)}`);
             }
             
-            const minProfit = parseFloat(document.getElementById('minProfit').value);
-            const duration = parseInt(document.getElementById('duration').value);
+            // Check content type
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                const text = await response.text();
+                console.error('Non-JSON response:', text.substring(0, 200));
+                throw new Error('Server returned non-JSON response. Expected JSON but got: ' + contentType);
+            }
             
-            // Update UI
-            document.getElementById('btnText').style.display = 'none';
-            document.getElementById('btnLoader').style.display = 'inline';
-            document.getElementById('scanBtn').disabled = true;
-            document.getElementById('status').innerHTML = `<span class="loading"></span> Collecting data for ${duration} seconds...`;
+            const data = await response.json();
+            console.log('Received data:', data);
             
-            // Clear previous results
-            document.getElementById('logContainer').innerHTML = '';
-            document.getElementById('summaryGrid').innerHTML = '';
-            document.getElementById('tableBody').innerHTML = '';
-            document.getElementById('logCard').style.display = 'block';
-            
-            try {
-                const response = await fetch('/api/scan', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        exchanges: Array.from(selectedExchanges),
-                        min_profit: minProfit,
-                        collection_duration: duration
-                    })
-                });
-                
-                const data = await response.json();
-                
-                // Display logs
-                const logContainer = document.getElementById('logContainer');
+            // Display logs
+            const logContainer = document.getElementById('logContainer');
+            if (data.logs && data.logs.length > 0) {
                 data.logs.forEach(log => {
                     const logEntry = document.createElement('div');
                     logEntry.className = 'log-entry';
                     logEntry.innerHTML = `
-                        <span class="log-time">${log.timestamp}</span>
-                        <span class="log-exchange ${log.exchange}">${log.exchange}</span>
-                        <span class="log-${log.level}">${log.message}</span>
+                        <span class="log-time">${log.timestamp || '??'}</span>
+                        <span class="log-exchange ${log.exchange || ''}">${log.exchange || 'unknown'}</span>
+                        <span class="log-${log.level || 'info'}">${log.message || ''}</span>
                     `;
                     logContainer.appendChild(logEntry);
                 });
                 logContainer.scrollTop = logContainer.scrollHeight;
-                
-                // Display summaries
-                if (data.summaries.length > 0) {
-                    document.getElementById('summaryCard').style.display = 'block';
-                    const summaryGrid = document.getElementById('summaryGrid');
-                    data.summaries.forEach(summary => {
-                        const card = document.createElement('div');
-                        card.className = `summary-card ${summary.exchange}`;
-                        card.innerHTML = `
-                            <div class="summary-title">${summary.exchange.toUpperCase()}</div>
-                            <div class="summary-stats">
-                                <div><span class="stat-label">Pairs:</span> <span class="stat-value">${summary.pairs_collected}</span></div>
-                                <div><span class="stat-label">Paths:</span> <span class="stat-value">${summary.paths_found}</span></div>
-                                <div><span class="stat-label">Profitable:</span> <span class="stat-value">${summary.profitable_triangles}</span></div>
-                                <div><span class="stat-label">Time:</span> <span class="stat-value">${summary.collection_time_secs}s</span></div>
-                            </div>
-                        `;
-                        summaryGrid.appendChild(card);
-                    });
-                }
-                
-                // Display opportunities in table
-                if (data.opportunities.length > 0) {
-                    document.getElementById('resultsCard').style.display = 'block';
-                    document.getElementById('resultsTitle').innerHTML = `🎯 Arbitrage Opportunities (${data.opportunities.length})`;
-                    
-                    const tableBody = document.getElementById('tableBody');
-                    data.opportunities.forEach(opp => {
-                        const profitClass = opp.profit_margin_before > 1.0 ? 'profit-high' : 
-                                          (opp.profit_margin_before > 0.5 ? 'profit-medium' : 'profit-low');
-                        
-                        const chanceClass = opp.chance_of_executing > 80.0 ? 'chance-high' :
-                                          (opp.chance_of_executing > 70.0 ? 'chance-medium' : 'chance-low');
-                        
-                        const row = document.createElement('tr');
-                        row.innerHTML = `
-                            <td><span class="exchange-badge ${opp.exchange}">${opp.exchange.toUpperCase()}</span></td>
-                            <td style="font-family: monospace;">${opp.pair}</td>
-                            <td class="${profitClass}">${opp.profit_margin_before.toFixed(3)}%</td>
-                            <td>${opp.profit_margin_after.toFixed(3)}%</td>
-                            <td class="${chanceClass}">${opp.chance_of_executing.toFixed(1)}%</td>
-                            <td>${opp.estimated_slippage.toFixed(3)}%</td>
-                            <td><button class="view-btn" onclick='alert("Triangle Path:\\n${opp.triangle.join(' → ')}")'>View</button></td>
-                        `;
-                        tableBody.appendChild(row);
-                    });
-                    
-                    document.getElementById('status').innerHTML = `✅ Found ${data.opportunities.length} opportunities`;
-                } else {
-                    document.getElementById('status').innerHTML = '❌ No arbitrage opportunities found';
-                }
-                
-            } catch (error) {
-                document.getElementById('status').innerHTML = '❌ Error: ' + error.message;
-                console.error(error);
+            } else {
+                logContainer.innerHTML = '<div class="log-entry">No logs available</div>';
             }
             
+            // Display summaries
+            if (data.summaries && data.summaries.length > 0) {
+                document.getElementById('summaryCard').style.display = 'block';
+                const summaryGrid = document.getElementById('summaryGrid');
+                data.summaries.forEach(summary => {
+                    const card = document.createElement('div');
+                    card.className = `summary-card ${summary.exchange || ''}`;
+                    card.innerHTML = `
+                        <div class="summary-title">${(summary.exchange || 'unknown').toUpperCase()}</div>
+                        <div class="summary-stats">
+                            <div><span class="stat-label">Pairs:</span> <span class="stat-value">${summary.pairs_collected || 0}</span></div>
+                            <div><span class="stat-label">Paths:</span> <span class="stat-value">${summary.paths_found || 0}</span></div>
+                            <div><span class="stat-label">Profitable:</span> <span class="stat-value">${summary.profitable_triangles || 0}</span></div>
+                            <div><span class="stat-label">Time:</span> <span class="stat-value">${summary.collection_time_secs || 0}s</span></div>
+                        </div>
+                    `;
+                    summaryGrid.appendChild(card);
+                });
+            }
+            
+            // Display opportunities in table
+            if (data.opportunities && data.opportunities.length > 0) {
+                document.getElementById('resultsCard').style.display = 'block';
+                document.getElementById('resultsTitle').innerHTML = `🎯 Arbitrage Opportunities (${data.opportunities.length})`;
+                
+                const tableBody = document.getElementById('tableBody');
+                data.opportunities.forEach(opp => {
+                    const profitClass = opp.profit_margin_before > 1.0 ? 'profit-high' : 
+                                      (opp.profit_margin_before > 0.5 ? 'profit-medium' : 'profit-low');
+                    
+                    const chanceClass = opp.chance_of_executing > 80.0 ? 'chance-high' :
+                                      (opp.chance_of_executing > 70.0 ? 'chance-medium' : 'chance-low');
+                    
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td><span class="exchange-badge ${opp.exchange || ''}">${(opp.exchange || 'unknown').toUpperCase()}</span></td>
+                        <td style="font-family: monospace;">${opp.pair || 'N/A'}</td>
+                        <td class="${profitClass}">${(opp.profit_margin_before || 0).toFixed(3)}%</td>
+                        <td>${(opp.profit_margin_after || 0).toFixed(3)}%</td>
+                        <td class="${chanceClass}">${(opp.chance_of_executing || 0).toFixed(1)}%</td>
+                        <td>${(opp.estimated_slippage || 0).toFixed(3)}%</td>
+                        <td><button class="view-btn" onclick='alert("Triangle Path:\\n${(opp.triangle || []).join(' → ')}")'>View</button></td>
+                    `;
+                    tableBody.appendChild(row);
+                });
+                
+                document.getElementById('status').innerHTML = `✅ Found ${data.opportunities.length} opportunities`;
+            } else {
+                document.getElementById('status').innerHTML = '❌ No arbitrage opportunities found';
+            }
+            
+        } catch (error) {
+            console.error('Full error:', error);
+            document.getElementById('status').innerHTML = `❌ Error: ${error.message}`;
+            
+            // Add error to log
+            const logContainer = document.getElementById('logContainer');
+            const errorEntry = document.createElement('div');
+            errorEntry.className = 'log-entry';
+            errorEntry.innerHTML = `
+                <span class="log-time">${new Date().toLocaleTimeString()}</span>
+                <span class="log-exchange">system</span>
+                <span class="log-error">${error.message}</span>
+            `;
+            logContainer.appendChild(errorEntry);
+        } finally {
             // Reset button
             document.getElementById('btnText').style.display = 'inline';
             document.getElementById('btnLoader').style.display = 'none';
             document.getElementById('scanBtn').disabled = false;
-        });
-    </script>
+        }
+    });
+
+    // Auto-run health check on page load
+    window.addEventListener('load', async () => {
+        const healthy = await checkApiHealth();
+        if (healthy) {
+            document.getElementById('status').innerHTML = '✅ API connected. Ready to scan.';
+        } else {
+            document.getElementById('status').innerHTML = '❌ API not reachable. Check server.';
+        }
+    });
+  </script>
 </body>
 </html>
