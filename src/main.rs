@@ -779,7 +779,7 @@ impl ArbitrageDetector {
         opportunities: all_opportunities,
         summaries: all_summaries,
         logs: all_logs,
-    })
+    }
 }
 
 // ==================== API Handlers ====================
