@@ -760,46 +760,72 @@ impl ArbitrageDetector {
     }
 
     pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
-        -> ScanResponse {
-        
-        let mut all_opportunities = Vec::new();
-        let mut all_summaries = Vec::new();
-        let mut all_logs = Vec::new();
-        
-        for exchange in exchanges {
-            let (opps, summary, logs) = self.scan_exchange(&exchange, min_profit, duration_secs).await;
-            all_opportunities.extend(opps);
-            all_summaries.push(summary);
-            all_logs.extend(logs);
-        }
-        
-        all_opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap());
-        
-        ScanResponse {
-            opportunities: all_opportunities,
-            summaries: all_summaries,
-            logs: all_logs,
-        }
+    -> Result<ScanResponse, anyhow::Error> {
+    
+    let mut all_opportunities = Vec::new();
+    let mut all_summaries = Vec::new();
+    let mut all_logs = Vec::new();
+    
+    for exchange in exchanges {
+        let (opps, summary, logs) = self.scan_exchange(&exchange, min_profit, duration_secs).await;
+        all_opportunities.extend(opps);
+        all_summaries.push(summary);
+        all_logs.extend(logs);
     }
+    
+    all_opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap());
+    
+    Ok(ScanResponse {
+        opportunities: all_opportunities,
+        summaries: all_summaries,
+        logs: all_logs,
+    })
 }
 
 // ==================== API Handlers ====================
 
+// Add this near your other handlers
 async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
     println!("Received scan request for exchanges: {:?}", req.exchanges);
+    
+    // Validate request
+    if req.exchanges.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "No exchanges selected",
+            "opportunities": [],
+            "summaries": [],
+            "logs": []
+        }));
+    }
     
     let detector = ArbitrageDetector::new();
     let min_profit = req.min_profit.unwrap_or(0.3);
     let duration = req.collection_duration.unwrap_or(10);
     
-    let response = detector.scan_multiple_exchanges(
+    // Wrap in a catch to ensure we always return JSON
+    let response = match detector.scan_multiple_exchanges(
         req.exchanges.clone(), 
         min_profit, 
         duration
-    ).await;
+    ).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            eprintln!("Scan error: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Scan failed: {}", e),
+                "opportunities": [],
+                "summaries": [],
+                "logs": [{
+                    "timestamp": chrono::Local::now().format("%H:%M:%S").to_string(),
+                    "exchange": "system",
+                    "message": format!("Error: {}", e),
+                    "level": "error"
+                }]
+            }));
+        }
+    };
     
     println!("Scan complete. Found {} opportunities", response.opportunities.len());
-    
     HttpResponse::Ok().json(response)
 }
 
