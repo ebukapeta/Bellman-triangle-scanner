@@ -708,59 +708,61 @@ impl ArbitrageDetector {
         (amount - 1.0) * 100.0
     }
 
-    pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
-        let (summary, data, logs) = match exchange {
-            "binance" => {
-                let summary = self.binance_collector.start_collection(duration_secs).await;
-                (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
-            }
-            "bybit" => {
-                let summary = self.bybit_collector.start_collection(duration_secs).await;
-                (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
-            }
-            "kucoin" => {
-                let summary = self.kucoin_collector.start_collection(duration_secs).await;
-                (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
-            }
-            _ => {
-                return (Vec::new(), ScanSummary {
-                    exchange: exchange.to_string(),
-                    pairs_collected: 0,
-                    paths_found: 0,
-                    profitable_triangles: 0,
-                    collection_time_secs: 0,
-                }, Vec::new())
-            }
-        };
-
-        let data_guard = data.lock().await;
-        let tickers: HashMap<String, (f64, f64, i64)> = data_guard.clone();
-        drop(data_guard);
-
-        let logs_guard = logs.lock().await;
-        let scan_logs = logs_guard.clone();
-        drop(logs_guard);
-
-        if tickers.is_empty() {
-            return (Vec::new(), summary, scan_logs);
+    pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
+    -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
+    
+    let (summary, data, logs) = match exchange {
+        "binance" => {
+            let summary = self.binance_collector.start_collection(duration_secs).await;
+            (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
         }
-
-        let (graph, node_indices) = self.build_graph(&tickers);
-        let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
-
-        for opp in &mut opportunities {
-            opp.exchange = exchange.to_string();
+        "bybit" => {
+            let summary = self.bybit_collector.start_collection(duration_secs).await;
+            (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
         }
+        "kucoin" => {
+            let summary = self.kucoin_collector.start_collection(duration_secs).await;
+            (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
+        }
+        _ => {
+            return (Vec::new(), ScanSummary {
+                exchange: exchange.to_string(),
+                pairs_collected: 0,
+                paths_found: 0,
+                profitable_triangles: 0,
+                collection_time_secs: 0,
+            }, Vec::new())
+        }
+    };
 
-        let mut final_summary = summary;
-        final_summary.paths_found = paths_found;
-        final_summary.profitable_triangles = profitable;
+    let data_guard = data.lock().await;
+    let tickers: HashMap<String, (f64, f64, i64)> = data_guard.clone();
+    drop(data_guard);
 
-        (opportunities, final_summary, scan_logs)
+    let logs_guard = logs.lock().await;
+    let scan_logs = logs_guard.clone();
+    drop(logs_guard);
+
+    if tickers.is_empty() {
+        return (Vec::new(), summary, scan_logs);
     }
 
-    pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
-    -> Result<ScanResponse, anyhow::Error> {
+    let (graph, node_indices) = self.build_graph(&tickers);
+    let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
+
+    for opp in &mut opportunities {
+        opp.exchange = exchange.to_string();
+    }
+
+    let mut final_summary = summary;
+    final_summary.paths_found = paths_found;
+    final_summary.profitable_triangles = profitable;
+
+    (opportunities, final_summary, scan_logs)
+}
+
+pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
+    -> ScanResponse {
     
     let mut all_opportunities = Vec::new();
     let mut all_summaries = Vec::new();
@@ -775,7 +777,7 @@ impl ArbitrageDetector {
     
     all_opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap());
     
-    Ok(ScanResponse {
+    ScanResponse {
         opportunities: all_opportunities,
         summaries: all_summaries,
         logs: all_logs,
@@ -784,7 +786,6 @@ impl ArbitrageDetector {
 
 // ==================== API Handlers ====================
 
-// Add this near your other handlers
 async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
     println!("Received scan request for exchanges: {:?}", req.exchanges);
     
@@ -802,28 +803,12 @@ async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
     let min_profit = req.min_profit.unwrap_or(0.3);
     let duration = req.collection_duration.unwrap_or(10);
     
-    // Wrap in a catch to ensure we always return JSON
-    let response = match detector.scan_multiple_exchanges(
+    // This now returns ScanResponse directly, not Result
+    let response = detector.scan_multiple_exchanges(
         req.exchanges.clone(), 
         min_profit, 
         duration
-    ).await {
-        Ok(resp) => resp,
-        Err(e) => {
-            eprintln!("Scan error: {}", e);
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": format!("Scan failed: {}", e),
-                "opportunities": [],
-                "summaries": [],
-                "logs": [{
-                    "timestamp": chrono::Local::now().format("%H:%M:%S").to_string(),
-                    "exchange": "system",
-                    "message": format!("Error: {}", e),
-                    "level": "error"
-                }]
-            }));
-        }
-    };
+    ).await;
     
     println!("Scan complete. Found {} opportunities", response.opportunities.len());
     HttpResponse::Ok().json(response)
@@ -861,4 +846,4 @@ async fn main() -> std::io::Result<()> {
     .bind(&bind_addr)?
     .run()
     .await
-}
+                                                                                 }
