@@ -111,12 +111,15 @@ impl BinanceWebSocketCollector {
                 });
 
                 let mut pair_count = 0;
+                let mut last_log_time = Instant::now();
 
                 // Collect data until end_time
                 while Instant::now() < end_time {
-                    match tokio::time::timeout(Duration::from_millis(100), read.next()).await {
+                    match tokio::time::timeout(Duration::from_millis(1000), read.next()).await {
                         Ok(Some(Ok(Message::Text(text)))) => {
+                            // Parse the ticker data
                             if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                // Check if it's a ticker message (has 's' field for symbol)
                                 if let Some(symbol) = ticker_data["s"].as_str() {
                                     if symbol.ends_with("USDT") || symbol.ends_with("BUSD") || symbol.ends_with("USDC") {
                                         if let (Some(bid), Some(ask)) = (
@@ -127,21 +130,23 @@ impl BinanceWebSocketCollector {
                                             data.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
                                             pair_count += 1;
                                             
-                                            if pair_count % 100 == 0 {
+                                            // Log every 50 pairs or every 2 seconds
+                                            if pair_count % 50 == 0 || last_log_time.elapsed() > Duration::from_secs(2) {
                                                 logs_clone.lock().await.push(ScanLog {
                                                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                                                     exchange: "binance".to_string(),
-                                                    message: format!("Collected {} pairs...", pair_count),
+                                                    message: format!("Collected {} pairs so far...", pair_count),
                                                     level: "debug".to_string(),
                                                 });
+                                                last_log_time = Instant::now();
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        Ok(Some(Ok(Message::Ping(_)))) => {
-                            // Ignore pings
+                        Ok(Some(Ok(Message::Ping(data)))) => {
+                            // Ignore pings - they're handled automatically
                         }
                         Ok(Some(Err(e))) => {
                             logs_clone.lock().await.push(ScanLog {
@@ -152,7 +157,20 @@ impl BinanceWebSocketCollector {
                             });
                             break;
                         }
-                        _ => {} // Timeout or other messages - continue
+                        Ok(None) => {
+                            // Connection closed
+                            logs_clone.lock().await.push(ScanLog {
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                exchange: "binance".to_string(),
+                                message: "WebSocket connection closed".to_string(),
+                                level: "warning".to_string(),
+                            });
+                            break;
+                        }
+                        Err(_) => {
+                            // Timeout - continue
+                            continue;
+                        }
                     }
                 }
 
