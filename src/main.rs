@@ -145,8 +145,30 @@ impl BinanceWebSocketCollector {
                                 }
                             }
                         }
+                        Ok(Some(Ok(Message::Binary(_)))) => {
+                            // Ignore binary messages
+                            continue;
+                        }
                         Ok(Some(Ok(Message::Ping(data)))) => {
-                            // Ignore pings - they're handled automatically
+                            // Pings are handled automatically by tungstenite
+                            continue;
+                        }
+                        Ok(Some(Ok(Message::Pong(_)))) => {
+                            // Ignore pong messages
+                            continue;
+                        }
+                        Ok(Some(Ok(Message::Close(_)))) => {
+                            logs_clone.lock().await.push(ScanLog {
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                exchange: "binance".to_string(),
+                                message: "WebSocket connection closed by server".to_string(),
+                                level: "warning".to_string(),
+                            });
+                            break;
+                        }
+                        Ok(Some(Ok(Message::Frame(_)))) => {
+                            // Ignore raw frames
+                            continue;
                         }
                         Ok(Some(Err(e))) => {
                             logs_clone.lock().await.push(ScanLog {
