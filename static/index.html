@@ -402,7 +402,7 @@
     
     async function checkApiHealth() {
         try {
-            const response = await fetch('/health');
+            const response = await fetch('/api/health');
             const text = await response.text();
             console.log('Health check:', text);
             return response.ok;
