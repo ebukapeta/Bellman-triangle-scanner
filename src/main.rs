@@ -840,7 +840,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .service(fs::Files::new("/", "./static").index_file("index.html"))
             .route("/api/health", web::get().to(health_handler))
-            .route("/api/scan", web::post().to(scan_handler))
+            .route("/api/scan", web::route().to(scan_handler))
     })
     .bind(&bind_addr)?
     .run()
