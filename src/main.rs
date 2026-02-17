@@ -601,7 +601,7 @@ impl ArbitrageDetector {
         50.0 + (avg_score * 45.0)
     }
 
-    fn find_profitable_triangles(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
+    fn find_profitable_triangles(&self, graph: &DiGraph<String, f64>, _node_indices: &HashMap<String, NodeIndex>, 
                                  tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize) {
         let mut opportunities = Vec::new();
         let mut total_paths_checked = 0;
@@ -763,7 +763,7 @@ impl ArbitrageDetector {
         println!("📈 Graph has {} nodes and {} edges", graph.node_count(), graph.edge_count());
     
         println!("🔎 Running Bellman-Ford to find arbitrage opportunities...");
-        let (opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
+        let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
     
         println!("📊 Results for {}: {} paths checked, {} profitable triangles found", 
                exchange, paths_found, profitable);
