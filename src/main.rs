@@ -61,7 +61,6 @@ pub struct ScanResponse {
 }
 
 // ==================== WebSocket Collectors ====================
-
 pub struct BinanceWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -78,6 +77,7 @@ impl BinanceWebSocketCollector {
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
         
+        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -94,72 +94,59 @@ impl BinanceWebSocketCollector {
 
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
+        let ws_url = "wss://stream.binance.com:9443/ws/!ticker@arr".to_string();
 
-        tokio::spawn(async move {
-            let ws_url = "wss://stream.binance.com:9443/ws/!ticker@arr";
-            
-            match connect_async(ws_url).await {
+        // Spawn WebSocket connection and WAIT for it to collect data
+        let collection_task = tokio::spawn(async move {
+            match connect_async(&ws_url).await {
                 Ok((ws_stream, _)) => {
-                    let (mut write, mut read) = ws_stream.split();
+                    let (_, mut read) = ws_stream.split();
                     
-                    let _ = logs_clone.lock().await.push(ScanLog {
+                    logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "binance".to_string(),
-                        message: "Binance WebSocket connected successfully".to_string(),
+                        message: "Binance WebSocket connected".to_string(),
                         level: "success".to_string(),
                     });
 
                     let mut pair_count = 0;
-                    let start = Instant::now();
+                    let task_start = Instant::now();
 
-                    while start.elapsed().as_secs() < duration_secs {
-                        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_secs(1), read.next()).await {
-                            match msg {
-                                Ok(Message::Text(text)) => {
-                                    if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                        if let Some(symbol) = ticker_data["s"].as_str() {
-                                            if symbol.ends_with("USDT") || symbol.ends_with("BUSD") || symbol.ends_with("USDC") {
-                                                if let (Some(bid), Some(ask)) = (
-                                                    ticker_data["b"].as_str().and_then(|s| s.parse::<f64>().ok()),
-                                                    ticker_data["a"].as_str().and_then(|s| s.parse::<f64>().ok()),
-                                                ) {
-                                                    let mut data = data_clone.lock().await;
-                                                    data.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
-                                                    pair_count += 1;
-                                                    
-                                                    if pair_count % 100 == 0 {
-                                                        let _ = logs_clone.lock().await.push(ScanLog {
-                                                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                            exchange: "binance".to_string(),
-                                                            message: format!("Binance collected {} pairs...", pair_count),
-                                                            level: "debug".to_string(),
-                                                        });
-                                                    }
-                                                }
+                    while task_start.elapsed().as_secs() < duration_secs {
+                        match tokio::time::timeout(Duration::from_secs(1), read.next()).await {
+                            Ok(Some(Ok(Message::Text(text)))) => {
+                                if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if let Some(symbol) = ticker_data["s"].as_str() {
+                                        if symbol.ends_with("USDT") || symbol.ends_with("BUSD") || symbol.ends_with("USDC") {
+                                            if let (Some(bid), Some(ask)) = (
+                                                ticker_data["b"].as_str().and_then(|s| s.parse::<f64>().ok()),
+                                                ticker_data["a"].as_str().and_then(|s| s.parse::<f64>().ok()),
+                                            ) {
+                                                let mut data = data_clone.lock().await;
+                                                data.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
+                                                pair_count += 1;
                                             }
                                         }
                                     }
                                 }
-                                Ok(Message::Ping(data)) => {
-                                    let _ = write.send(Message::Pong(data)).await;
-                                }
-                                Err(e) => {
-                                    let _ = logs_clone.lock().await.push(ScanLog {
-                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                        exchange: "binance".to_string(),
-                                        message: format!("Binance WebSocket error: {}", e),
-                                        level: "error".to_string(),
-                                    });
-                                    break;
-                                }
-                                _ => {}
                             }
+                            Ok(Some(Ok(Message::Ping(data)))) => {
+                                // Ignore pings
+                            }
+                            Ok(Some(Err(e))) => {
+                                logs_clone.lock().await.push(ScanLog {
+                                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                    exchange: "binance".to_string(),
+                                    message: format!("WebSocket error: {}", e),
+                                    level: "error".to_string(),
+                                });
+                                break;
+                            }
+                            _ => {}
                         }
                     }
 
-                    let _ = write.close().await;
-                    
-                    let _ = logs_clone.lock().await.push(ScanLog {
+                    logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "binance".to_string(),
                         message: format!("Binance collection complete. Total pairs: {}", pair_count),
@@ -167,7 +154,7 @@ impl BinanceWebSocketCollector {
                     });
                 }
                 Err(e) => {
-                    let _ = logs_clone.lock().await.push(ScanLog {
+                    logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "binance".to_string(),
                         message: format!("Binance connection failed: {}", e),
@@ -177,7 +164,8 @@ impl BinanceWebSocketCollector {
             }
         });
 
-        tokio::time::sleep(Duration::from_secs(duration_secs + 2)).await;
+        // Wait for the collection task to complete
+        let _ = collection_task.await;
 
         let final_data = self.collected_data.lock().await;
         let pairs_collected = final_data.len();
@@ -233,14 +221,14 @@ impl BybitWebSocketCollector {
 
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
+        let ws_url = "wss://stream.bybit.com/v5/public/spot".to_string();
 
-        tokio::spawn(async move {
-            let ws_url = "wss://stream.bybit.com/v5/public/spot";
-            
-            match connect_async(ws_url).await {
+        let collection_task = tokio::spawn(async move {
+            match connect_async(&ws_url).await {
                 Ok((ws_stream, _)) => {
                     let (mut write, mut read) = ws_stream.split();
                     
+                    // Subscribe to tickers
                     let subscribe_msg = serde_json::json!({
                         "op": "subscribe",
                         "args": ["tickers"]
@@ -250,58 +238,54 @@ impl BybitWebSocketCollector {
                         let _ = write.send(Message::Text(msg_str)).await;
                     }
 
-                    let _ = logs_clone.lock().await.push(ScanLog {
+                    logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
-                        message: "Bybit WebSocket connected and subscribed".to_string(),
+                        message: "Bybit WebSocket connected".to_string(),
                         level: "success".to_string(),
                     });
 
                     let mut pair_count = 0;
-                    let start = Instant::now();
+                    let task_start = Instant::now();
 
-                    while start.elapsed().as_secs() < duration_secs {
-                        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_secs(1), read.next()).await {
-                            match msg {
-                                Ok(Message::Text(text)) => {
-                                    if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                        if ticker_data["topic"].as_str() == Some("tickers") {
-                                            if let Some(data) = ticker_data["data"].as_object() {
-                                                if let (Some(symbol), Some(bid), Some(ask)) = (
-                                                    data.get("symbol").and_then(|s| s.as_str()),
-                                                    data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                                    data.get("ask1Price").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                                ) {
-                                                    if symbol.ends_with("USDT") {
-                                                        let mut data_map = data_clone.lock().await;
-                                                        data_map.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
-                                                        pair_count += 1;
-                                                    }
+                    while task_start.elapsed().as_secs() < duration_secs {
+                        match tokio::time::timeout(Duration::from_secs(1), read.next()).await {
+                            Ok(Some(Ok(Message::Text(text)))) => {
+                                if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if ticker_data["topic"].as_str() == Some("tickers") {
+                                        if let Some(data) = ticker_data["data"].as_object() {
+                                            if let (Some(symbol), Some(bid), Some(ask)) = (
+                                                data.get("symbol").and_then(|s| s.as_str()),
+                                                data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                                data.get("ask1Price").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                            ) {
+                                                if symbol.ends_with("USDT") {
+                                                    let mut data_map = data_clone.lock().await;
+                                                    data_map.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
+                                                    pair_count += 1;
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                Ok(Message::Ping(data)) => {
-                                    let _ = write.send(Message::Pong(data)).await;
-                                }
-                                Err(e) => {
-                                    let _ = logs_clone.lock().await.push(ScanLog {
-                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                        exchange: "bybit".to_string(),
-                                        message: format!("Bybit WebSocket error: {}", e),
-                                        level: "error".to_string(),
-                                    });
-                                    break;
-                                }
-                                _ => {}
                             }
+                            Ok(Some(Ok(Message::Ping(data)))) => {
+                                let _ = write.send(Message::Pong(data)).await;
+                            }
+                            Ok(Some(Err(e))) => {
+                                logs_clone.lock().await.push(ScanLog {
+                                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                    exchange: "bybit".to_string(),
+                                    message: format!("WebSocket error: {}", e),
+                                    level: "error".to_string(),
+                                });
+                                break;
+                            }
+                            _ => {}
                         }
                     }
 
-                    let _ = write.close().await;
-                    
-                    let _ = logs_clone.lock().await.push(ScanLog {
+                    logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
                         message: format!("Bybit collection complete. Total pairs: {}", pair_count),
@@ -309,7 +293,7 @@ impl BybitWebSocketCollector {
                     });
                 }
                 Err(e) => {
-                    let _ = logs_clone.lock().await.push(ScanLog {
+                    logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
                         message: format!("Bybit connection failed: {}", e),
@@ -319,7 +303,7 @@ impl BybitWebSocketCollector {
             }
         });
 
-        tokio::time::sleep(Duration::from_secs(duration_secs + 2)).await;
+        let _ = collection_task.await;
 
         let final_data = self.collected_data.lock().await;
         let pairs_collected = final_data.len();
@@ -376,7 +360,7 @@ impl KuCoinWebSocketCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        tokio::spawn(async move {
+        let collection_task = tokio::spawn(async move {
             let client = reqwest::Client::new();
             let token_url = "https://api.kucoin.com/api/v1/bullet-public";
             
@@ -405,58 +389,54 @@ impl KuCoinWebSocketCollector {
                                         let _ = write.send(Message::Text(msg_str)).await;
                                     }
 
-                                    let _ = logs_clone.lock().await.push(ScanLog {
+                                    logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "kucoin".to_string(),
-                                        message: "KuCoin WebSocket connected and subscribed".to_string(),
+                                        message: "KuCoin WebSocket connected".to_string(),
                                         level: "success".to_string(),
                                     });
 
                                     let mut pair_count = 0;
-                                    let start = Instant::now();
+                                    let task_start = Instant::now();
 
-                                    while start.elapsed().as_secs() < duration_secs {
-                                        if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_secs(1), read.next()).await {
-                                            match msg {
-                                                Ok(Message::Text(text)) => {
-                                                    if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                                        if ticker_data["type"].as_str() == Some("message") {
-                                                            if let Some(data) = ticker_data["data"].as_object() {
-                                                                if let (Some(symbol), Some(bestBid), Some(bestAsk)) = (
-                                                                    data.get("symbol").and_then(|s| s.as_str()),
-                                                                    data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                                                    data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                                                ) {
-                                                                    if symbol.ends_with("USDT") {
-                                                                        let mut data_map = data_clone.lock().await;
-                                                                        data_map.insert(symbol.to_string(), (bestBid, bestAsk, chrono::Utc::now().timestamp_millis()));
-                                                                        pair_count += 1;
-                                                                    }
+                                    while task_start.elapsed().as_secs() < duration_secs {
+                                        match tokio::time::timeout(Duration::from_secs(1), read.next()).await {
+                                            Ok(Some(Ok(Message::Text(text)))) => {
+                                                if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                                    if ticker_data["type"].as_str() == Some("message") {
+                                                        if let Some(data) = ticker_data["data"].as_object() {
+                                                            if let (Some(symbol), Some(bestBid), Some(bestAsk)) = (
+                                                                data.get("symbol").and_then(|s| s.as_str()),
+                                                                data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                                                data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                                            ) {
+                                                                if symbol.ends_with("USDT") {
+                                                                    let mut data_map = data_clone.lock().await;
+                                                                    data_map.insert(symbol.to_string(), (bestBid, bestAsk, chrono::Utc::now().timestamp_millis()));
+                                                                    pair_count += 1;
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
-                                                Ok(Message::Ping(data)) => {
-                                                    let _ = write.send(Message::Pong(data)).await;
-                                                }
-                                                Err(e) => {
-                                                    let _ = logs_clone.lock().await.push(ScanLog {
-                                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                        exchange: "kucoin".to_string(),
-                                                        message: format!("KuCoin WebSocket error: {}", e),
-                                                        level: "error".to_string(),
-                                                    });
-                                                    break;
-                                                }
-                                                _ => {}
                                             }
+                                            Ok(Some(Ok(Message::Ping(data)))) => {
+                                                let _ = write.send(Message::Pong(data)).await;
+                                            }
+                                            Ok(Some(Err(e))) => {
+                                                logs_clone.lock().await.push(ScanLog {
+                                                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                                    exchange: "kucoin".to_string(),
+                                                    message: format!("WebSocket error: {}", e),
+                                                    level: "error".to_string(),
+                                                });
+                                                break;
+                                            }
+                                            _ => {}
                                         }
                                     }
 
-                                    let _ = write.close().await;
-                                    
-                                    let _ = logs_clone.lock().await.push(ScanLog {
+                                    logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "kucoin".to_string(),
                                         message: format!("KuCoin collection complete. Total pairs: {}", pair_count),
@@ -464,7 +444,7 @@ impl KuCoinWebSocketCollector {
                                     });
                                 }
                                 Err(e) => {
-                                    let _ = logs_clone.lock().await.push(ScanLog {
+                                    logs_clone.lock().await.push(ScanLog {
                                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                                         exchange: "kucoin".to_string(),
                                         message: format!("KuCoin WebSocket connection failed: {}", e),
@@ -476,7 +456,7 @@ impl KuCoinWebSocketCollector {
                     }
                 }
                 Err(e) => {
-                    let _ = logs_clone.lock().await.push(ScanLog {
+                    logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "kucoin".to_string(),
                         message: format!("Failed to get KuCoin WebSocket token: {}", e),
@@ -486,7 +466,7 @@ impl KuCoinWebSocketCollector {
             }
         });
 
-        tokio::time::sleep(Duration::from_secs(duration_secs + 3)).await;
+        let _ = collection_task.await;
 
         let final_data = self.collected_data.lock().await;
         let pairs_collected = final_data.len();
