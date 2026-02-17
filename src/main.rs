@@ -709,78 +709,79 @@ impl ArbitrageDetector {
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
-    -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
-    
-    let (summary, data, logs) = match exchange {
-        "binance" => {
-            let summary = self.binance_collector.start_collection(duration_secs).await;
-            (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
-        }
-        "bybit" => {
-            let summary = self.bybit_collector.start_collection(duration_secs).await;
-            (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
-        }
-        "kucoin" => {
-            let summary = self.kucoin_collector.start_collection(duration_secs).await;
-            (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
-        }
-        _ => {
-            return (Vec::new(), ScanSummary {
-                exchange: exchange.to_string(),
-                pairs_collected: 0,
-                paths_found: 0,
-                profitable_triangles: 0,
-                collection_time_secs: 0,
-            }, Vec::new())
-        }
-    };
+        -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
+        
+        let (summary, data, logs) = match exchange {
+            "binance" => {
+                let summary = self.binance_collector.start_collection(duration_secs).await;
+                (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
+            }
+            "bybit" => {
+                let summary = self.bybit_collector.start_collection(duration_secs).await;
+                (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
+            }
+            "kucoin" => {
+                let summary = self.kucoin_collector.start_collection(duration_secs).await;
+                (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
+            }
+            _ => {
+                return (Vec::new(), ScanSummary {
+                    exchange: exchange.to_string(),
+                    pairs_collected: 0,
+                    paths_found: 0,
+                    profitable_triangles: 0,
+                    collection_time_secs: 0,
+                }, Vec::new())
+            }
+        };
 
-    let data_guard = data.lock().await;
-    let tickers: HashMap<String, (f64, f64, i64)> = data_guard.clone();
-    drop(data_guard);
+        let data_guard = data.lock().await;
+        let tickers: HashMap<String, (f64, f64, i64)> = data_guard.clone();
+        drop(data_guard);
 
-    let logs_guard = logs.lock().await;
-    let scan_logs = logs_guard.clone();
-    drop(logs_guard);
+        let logs_guard = logs.lock().await;
+        let scan_logs = logs_guard.clone();
+        drop(logs_guard);
 
-    if tickers.is_empty() {
-        return (Vec::new(), summary, scan_logs);
+        if tickers.is_empty() {
+            return (Vec::new(), summary, scan_logs);
+        }
+
+        let (graph, node_indices) = self.build_graph(&tickers);
+        let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
+
+        for opp in &mut opportunities {
+            opp.exchange = exchange.to_string();
+        }
+
+        let mut final_summary = summary;
+        final_summary.paths_found = paths_found;
+        final_summary.profitable_triangles = profitable;
+
+        (opportunities, final_summary, scan_logs)
     }
 
-    let (graph, node_indices) = self.build_graph(&tickers);
-    let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
-
-    for opp in &mut opportunities {
-        opp.exchange = exchange.to_string();
-    }
-
-    let mut final_summary = summary;
-    final_summary.paths_found = paths_found;
-    final_summary.profitable_triangles = profitable;
-
-    (opportunities, final_summary, scan_logs)
-}
-
-pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
-    -> ScanResponse {
-    
-    let mut all_opportunities = Vec::new();
-    let mut all_summaries = Vec::new();
-    let mut all_logs = Vec::new();
-    
-    for exchange in exchanges {
-        let (opps, summary, logs) = self.scan_exchange(&exchange, min_profit, duration_secs).await;
-        all_opportunities.extend(opps);
-        all_summaries.push(summary);
-        all_logs.extend(logs);
-    }
-    
-    all_opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap());
-    
-    ScanResponse {
-        opportunities: all_opportunities,
-        summaries: all_summaries,
-        logs: all_logs,
+    pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
+        -> ScanResponse {
+        
+        let mut all_opportunities = Vec::new();
+        let mut all_summaries = Vec::new();
+        let mut all_logs = Vec::new();
+        
+        for exchange in exchanges {
+            let (opps, summary, logs) = self.scan_exchange(&exchange, min_profit, duration_secs).await;
+            all_opportunities.extend(opps);
+            all_summaries.push(summary);
+            all_logs.extend(logs);
+        }
+        
+        all_opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap());
+        
+        ScanResponse {
+            opportunities: all_opportunities,
+            summaries: all_summaries,
+            logs: all_logs,
+        }
     }
 }
 
@@ -789,7 +790,6 @@ pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: 
 async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
     println!("Received scan request for exchanges: {:?}", req.exchanges);
     
-    // Validate request
     if req.exchanges.is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "No exchanges selected",
@@ -803,7 +803,6 @@ async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
     let min_profit = req.min_profit.unwrap_or(0.3);
     let duration = req.collection_duration.unwrap_or(10);
     
-    // This now returns ScanResponse directly, not Result
     let response = detector.scan_multiple_exchanges(
         req.exchanges.clone(), 
         min_profit, 
@@ -846,4 +845,4 @@ async fn main() -> std::io::Result<()> {
     .bind(&bind_addr)?
     .run()
     .await
-                                                                                 }
+}
