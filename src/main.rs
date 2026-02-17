@@ -92,7 +92,7 @@ impl BinanceWebSocketCollector {
             if s.ends_with(*q) && s.len() > q.len() {
                 let base = s[..s.len() - q.len()].to_string();
                 return Some((base, q.to_string()));
-            }
+        }
         }
 
         if s.len() > 6 {
@@ -163,8 +163,7 @@ impl BinanceWebSocketCollector {
                                             let ask = Self::parse_f64(item.get("a"));
                                             
                                             if let (Some(sym), Some(bid_price), Some(ask_price)) = (symbol, bid, ask) {
-                                                if let Some((base, quote)) = Self::parse_symbol(sym) {
-                                                    // Store both bid and ask prices with timestamp
+                                                if let Some((_base, _quote)) = Self::parse_symbol(sym) {
                                                     let mut data = data_clone.lock().await;
                                                     data.insert(sym.to_string(), (bid_price, ask_price, chrono::Utc::now().timestamp_millis()));
                                                     pair_count += 1;
@@ -172,26 +171,25 @@ impl BinanceWebSocketCollector {
                                             }
                                         }
                                     }
-                                    Ok(_) => {
-                                        // Single ticker object (fallback)
-                                        if let Some(symbol) = item.get("s").and_then(|v| v.as_str()) {
-                                            let bid = Self::parse_f64(item.get("b"));
-                                            let ask = Self::parse_f64(item.get("a"));
-                                            
-                                            if let (Some(bid_price), Some(ask_price)) = (bid, ask) {
-                                                if let Some((base, quote)) = Self::parse_symbol(symbol) {
-                                                    let mut data = data_clone.lock().await;
-                                                    data.insert(symbol.to_string(), (bid_price, ask_price, chrono::Utc::now().timestamp_millis()));
-                                                    pair_count += 1;
-                                                }
+                                    Ok(serde_json::Value::Object(obj)) => {
+                                        // Single ticker object
+                                        let symbol = obj.get("s").and_then(|v| v.as_str());
+                                        let bid = Self::parse_f64(obj.get("b"));
+                                        let ask = Self::parse_f64(obj.get("a"));
+                                        
+                                        if let (Some(sym), Some(bid_price), Some(ask_price)) = (symbol, bid, ask) {
+                                            if let Some((_base, _quote)) = Self::parse_symbol(sym) {
+                                                let mut data = data_clone.lock().await;
+                                                data.insert(sym.to_string(), (bid_price, ask_price, chrono::Utc::now().timestamp_millis()));
+                                                pair_count += 1;
                                             }
                                         }
                                     }
-                                    Err(e) => {
+                                    _ => {
                                         logs_clone.lock().await.push(ScanLog {
                                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                                             exchange: "binance".to_string(),
-                                            message: format!("Failed to parse message: {}", e),
+                                            message: "Received non-object/array message".to_string(),
                                             level: "debug".to_string(),
                                         });
                                     }
@@ -262,7 +260,7 @@ impl BinanceWebSocketCollector {
     pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
         self.logs.clone()
     }
-}
+}                                    
 
 pub struct BybitWebSocketCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
