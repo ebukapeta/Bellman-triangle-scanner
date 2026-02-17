@@ -686,6 +686,68 @@ impl ArbitrageDetector {
         50.0 + (avg_score * 45.0)
     }
 
+    // Add this method to ArbitrageDetector
+    fn debug_graph(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, tickers: &HashMap<String, (f64, f64, i64)>) {
+       println!("=== GRAPH DEBUG ===");
+       println!("Nodes: {}", graph.node_count());
+       println!("Edges: {}", graph.edge_count());
+    
+       // Print first 10 edges as examples
+       let mut edge_count = 0;
+       for edge in graph.raw_edges() {
+          if edge_count >= 10 { break; }
+          let source = graph[edge.source()].clone();
+          let target = graph[edge.target()].clone();
+          println!("  {} -> {} : weight = {:.6}", source, target, edge.weight);
+          edge_count += 1;
+       }
+    
+       // Check a few specific pairs that should exist
+       let test_pairs = vec!["BTCUSDT", "ETHUSDT", "BNBUSDT"];
+       for pair in test_pairs {
+          if let Some((bid, ask, _)) = tickers.get(pair) {
+              println!("{}: bid={:.2}, ask={:.2}, spread={:.4}%", pair, bid, ask, (ask-bid)/bid*100.0);
+          } else {
+              println!("{}: NOT FOUND in tickers", pair);
+          }
+       }
+    
+       // Test a simple triangle: BTC -> USDT -> ETH -> BTC
+       if let (Some(btc_idx), Some(usdt_idx), Some(eth_idx)) = (
+          node_indices.get("BTC"),
+          node_indices.get("USDT"),
+          node_indices.get("ETH")
+       ) {
+          // Find edges
+          let mut btc_to_usdt = None;
+          let mut usdt_to_eth = None;
+          let mut eth_to_btc = None;
+        
+          for edge in graph.raw_edges() {
+              if edge.source() == *btc_idx && edge.target() == *usdt_idx {
+                 btc_to_usdt = Some(edge.weight);
+              } else if edge.source() == *usdt_idx && edge.target() == *eth_idx {
+                usdt_to_eth = Some(edge.weight);
+              } else if edge.source() == *eth_idx && edge.target() == *btc_idx {
+                eth_to_btc = Some(edge.weight);
+              }
+          }
+        
+          if let (Some(w1), Some(w2), Some(w3)) = (btc_to_usdt, usdt_to_eth, eth_to_btc) {
+               let total_weight = w1 + w2 + w3;
+               println!("BTC->USDT->ETH->BTC cycle weight: {:.6}", total_weight);
+               if total_weight < 0.0 {
+                   let profit = (-total_weight).exp() - 1.0;
+                   println!("  This is a negative cycle! Profit: {:.4}%", profit * 100.0);
+               } else {
+                  println!("  Not a negative cycle (need <0, got {:.6})", total_weight);
+               }
+           }
+       }
+    
+       println!("=== END DEBUG ===");
+    }
+
     fn find_profitable_triangles(&self, graph: &DiGraph<String, f64>, _node_indices: &HashMap<String, NodeIndex>, 
                                  tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize) {
         let mut opportunities = Vec::new();
