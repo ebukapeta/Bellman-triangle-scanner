@@ -709,28 +709,36 @@ impl ArbitrageDetector {
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
-        -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
-        
-        let (summary, data, logs) = match exchange {
-            "binance" => {
-                let summary = self.binance_collector.start_collection(duration_secs).await;
-                (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
-            }
-            "bybit" => {
-                let summary = self.bybit_collector.start_collection(duration_secs).await;
-                (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
-            }
-            "kucoin" => {
-                let summary = self.kucoin_collector.start_collection(duration_secs).await;
-                (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
+       -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
+    
+       println!("🔍 Starting scan for {} ({} seconds)", exchange, duration_secs);
+    
+       let (summary, data, logs) = match exchange {
+           "binance" => {
+               println!("📡 Connecting to Binance WebSocket...");
+               let summary = self.binance_collector.start_collection(duration_secs).await;
+               println!("✅ Binance collected {} pairs", summary.pairs_collected);
+               (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
+           }
+           "bybit" => {
+               println!("📡 Connecting to Bybit WebSocket...");
+               let summary = self.bybit_collector.start_collection(duration_secs).await;
+               println!("✅ Bybit collected {} pairs", summary.pairs_collected);
+               (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
+           }
+           "kucoin" => {
+               println!("📡 Connecting to KuCoin WebSocket...");
+               let summary = self.kucoin_collector.start_collection(duration_secs).await;
+               println!("✅ KuCoin collected {} pairs", summary.pairs_collected);
+               (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
             }
             _ => {
                 return (Vec::new(), ScanSummary {
-                    exchange: exchange.to_string(),
-                    pairs_collected: 0,
-                    paths_found: 0,
-                    profitable_triangles: 0,
-                    collection_time_secs: 0,
+                   exchange: exchange.to_string(),
+                   pairs_collected: 0,
+                   paths_found: 0,
+                   profitable_triangles: 0,
+                   collection_time_secs: 0,
                 }, Vec::new())
             }
         };
@@ -743,12 +751,22 @@ impl ArbitrageDetector {
         let scan_logs = logs_guard.clone();
         drop(logs_guard);
 
+        println!("📊 {} collected {} total tickers", exchange, tickers.len());
+
         if tickers.is_empty() {
-            return (Vec::new(), summary, scan_logs);
+           println!("⚠️ No tickers collected for {}", exchange);
+           return (Vec::new(), summary, scan_logs);
         }
 
+        println!("🔨 Building currency graph for {}...", exchange);
         let (graph, node_indices) = self.build_graph(&tickers);
-        let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
+        println!("📈 Graph has {} nodes and {} edges", graph.node_count(), graph.edge_count());
+    
+        println!("🔎 Running Bellman-Ford to find arbitrage opportunities...");
+        let (opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
+    
+        println!("📊 Results for {}: {} paths checked, {} profitable triangles found", 
+               exchange, paths_found, profitable);
 
         for opp in &mut opportunities {
             opp.exchange = exchange.to_string();
