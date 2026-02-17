@@ -831,16 +831,18 @@ async fn main() -> std::io::Result<()> {
     println!("Frontend serving from ./static directory");
     
     HttpServer::new(|| {
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header();
-            
-        App::new()
-            .wrap(cors)
-            .service(fs::Files::new("/", "./static").index_file("index.html"))
-            .route("/api/health", web::get().to(health_handler))
-            .route("/api/scan", web::route().to(scan_handler))
+    let cors = Cors::default()
+        .allow_any_origin()
+        .allow_any_method()
+        .allow_any_header();
+        
+    App::new()
+        .wrap(cors)
+        // API ROUTES FIRST - these need to be before the static files
+        .route("/health", web::get().to(health_handler))
+        .route("/api/scan", web::post().to(scan_handler))
+        // STATIC FILES LAST - this catches everything else
+        .service(fs::Files::new("/", "./static").index_file("index.html"))
     })
     .bind(&bind_addr)?
     .run()
