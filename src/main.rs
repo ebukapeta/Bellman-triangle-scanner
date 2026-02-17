@@ -74,9 +74,45 @@ impl BinanceWebSocketCollector {
         }
     }
 
+    fn parse_f64(v: Option<&serde_json::Value>) -> Option<f64> {
+        v.and_then(|val| {
+            val.as_f64()
+                .or_else(|| val.as_str().and_then(|s| s.parse::<f64>().ok()))
+        })
+    }
+
+    fn parse_symbol(symbol: &str) -> Option<(String, String)> {
+        let s = symbol.to_uppercase();
+        const QUOTES: [&str; 24] = [
+            "USDT", "BUSD", "USDC", "FDUSD", "TUSD", "BTC", "ETH", "BNB", "TRY", "EUR", "GBP", "AUD",
+            "BRL", "CAD", "ARS", "RUB", "ZAR", "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN",
+        ];
+
+        for q in &QUOTES {
+            if s.ends_with(*q) && s.len() > q.len() {
+                let base = s[..s.len() - q.len()].to_string();
+                return Some((base, q.to_string()));
+            }
+        }
+
+        if s.len() > 6 {
+            let try3 = s.split_at(s.len() - 3);
+            if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Some((try3.0.to_string(), try3.1.to_string()));
+            }
+        }
+        if s.len() > 7 {
+            let try4 = s.split_at(s.len() - 4);
+            if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Some((try4.0.to_string(), try4.1.to_string()));
+            }
+        }
+        None
+    }
+
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
-        let end_time = start_time + Duration::from_secs(duration_secs);
+        let deadline = Instant::now() + Duration::from_secs(duration_secs);
         
         // Clear previous data
         let mut data = self.collected_data.lock().await;
@@ -100,9 +136,7 @@ impl BinanceWebSocketCollector {
         let ws_url = "wss://stream.binance.com:9443/ws/!ticker@arr";
         
         match connect_async(ws_url).await {
-            Ok((ws_stream, _)) => {
-                let (_, mut read) = ws_stream.split();
-                
+            Ok((mut ws_stream, _)) => {
                 logs_clone.lock().await.push(ScanLog {
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     exchange: "binance".to_string(),
@@ -113,64 +147,59 @@ impl BinanceWebSocketCollector {
                 let mut pair_count = 0;
                 let mut last_log_time = Instant::now();
 
-                // Collect data until end_time
-                while Instant::now() < end_time {
-                    match tokio::time::timeout(Duration::from_millis(1000), read.next()).await {
-                        Ok(Some(Ok(Message::Text(text)))) => {
-                            // Parse the ticker data
-                            if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                // Check if it's a ticker message (has 's' field for symbol)
-                                if let Some(symbol) = ticker_data["s"].as_str() {
-                                    if symbol.ends_with("USDT") || symbol.ends_with("BUSD") || symbol.ends_with("USDC") {
-                                        if let (Some(bid), Some(ask)) = (
-                                            ticker_data["b"].as_str().and_then(|s| s.parse::<f64>().ok()),
-                                            ticker_data["a"].as_str().and_then(|s| s.parse::<f64>().ok()),
-                                        ) {
-                                            let mut data = data_clone.lock().await;
-                                            data.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
-                                            pair_count += 1;
+                while let Some(msg) = ws_stream.next().await {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+
+                    match msg {
+                        Ok(m) if m.is_text() => {
+                            if let Ok(txt) = m.into_text() {
+                                match serde_json::from_str::<serde_json::Value>(&txt) {
+                                    Ok(serde_json::Value::Array(arr)) => {
+                                        for item in arr {
+                                            let symbol = item.get("s").and_then(|v| v.as_str());
+                                            let bid = Self::parse_f64(item.get("b"));
+                                            let ask = Self::parse_f64(item.get("a"));
                                             
-                                            // Log every 50 pairs or every 2 seconds
-                                            if pair_count % 50 == 0 || last_log_time.elapsed() > Duration::from_secs(2) {
-                                                logs_clone.lock().await.push(ScanLog {
-                                                    timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                    exchange: "binance".to_string(),
-                                                    message: format!("Collected {} pairs so far...", pair_count),
-                                                    level: "debug".to_string(),
-                                                });
-                                                last_log_time = Instant::now();
+                                            if let (Some(sym), Some(bid_price), Some(ask_price)) = (symbol, bid, ask) {
+                                                if let Some((base, quote)) = Self::parse_symbol(sym) {
+                                                    // Store both bid and ask prices with timestamp
+                                                    let mut data = data_clone.lock().await;
+                                                    data.insert(sym.to_string(), (bid_price, ask_price, chrono::Utc::now().timestamp_millis()));
+                                                    pair_count += 1;
+                                                }
                                             }
                                         }
+                                    }
+                                    Ok(_) => {
+                                        // Single ticker object (fallback)
+                                        if let Some(symbol) = item.get("s").and_then(|v| v.as_str()) {
+                                            let bid = Self::parse_f64(item.get("b"));
+                                            let ask = Self::parse_f64(item.get("a"));
+                                            
+                                            if let (Some(bid_price), Some(ask_price)) = (bid, ask) {
+                                                if let Some((base, quote)) = Self::parse_symbol(symbol) {
+                                                    let mut data = data_clone.lock().await;
+                                                    data.insert(symbol.to_string(), (bid_price, ask_price, chrono::Utc::now().timestamp_millis()));
+                                                    pair_count += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        logs_clone.lock().await.push(ScanLog {
+                                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                            exchange: "binance".to_string(),
+                                            message: format!("Failed to parse message: {}", e),
+                                            level: "debug".to_string(),
+                                        });
                                     }
                                 }
                             }
                         }
-                        Ok(Some(Ok(Message::Binary(_)))) => {
-                            // Ignore binary messages
-                            continue;
-                        }
-                        Ok(Some(Ok(Message::Ping(data)))) => {
-                            // Pings are handled automatically by tungstenite
-                            continue;
-                        }
-                        Ok(Some(Ok(Message::Pong(_)))) => {
-                            // Ignore pong messages
-                            continue;
-                        }
-                        Ok(Some(Ok(Message::Close(_)))) => {
-                            logs_clone.lock().await.push(ScanLog {
-                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                exchange: "binance".to_string(),
-                                message: "WebSocket connection closed by server".to_string(),
-                                level: "warning".to_string(),
-                            });
-                            break;
-                        }
-                        Ok(Some(Ok(Message::Frame(_)))) => {
-                            // Ignore raw frames
-                            continue;
-                        }
-                        Ok(Some(Err(e))) => {
+                        Ok(_) => {} // Ignore other message types
+                        Err(e) => {
                             logs_clone.lock().await.push(ScanLog {
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                                 exchange: "binance".to_string(),
@@ -179,27 +208,27 @@ impl BinanceWebSocketCollector {
                             });
                             break;
                         }
-                        Ok(None) => {
-                            // Connection closed
-                            logs_clone.lock().await.push(ScanLog {
-                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                exchange: "binance".to_string(),
-                                message: "WebSocket connection closed".to_string(),
-                                level: "warning".to_string(),
-                            });
-                            break;
-                        }
-                        Err(_) => {
-                            // Timeout - continue
-                            continue;
-                        }
                     }
+
+                    // Progress logging
+                    if pair_count > 0 && (pair_count % 100 == 0 || last_log_time.elapsed() > Duration::from_secs(2)) {
+                        logs_clone.lock().await.push(ScanLog {
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            exchange: "binance".to_string(),
+                            message: format!("Collected {} unique pairs...", pair_count),
+                            level: "debug".to_string(),
+                        });
+                        last_log_time = Instant::now();
+                    }
+
+                    // Small delay to prevent CPU overload
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
 
                 logs_clone.lock().await.push(ScanLog {
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     exchange: "binance".to_string(),
-                    message: format!("Collection complete. Total pairs: {}", pair_count),
+                    message: format!("Collection complete. Total unique pairs: {}", pair_count),
                     level: "success".to_string(),
                 });
             }
