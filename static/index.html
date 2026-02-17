@@ -553,13 +553,8 @@
     });
 
     // Auto-run health check on page load
-    window.addEventListener('load', async () => {
-        const healthy = await checkApiHealth();
-        if (healthy) {
-            document.getElementById('status').innerHTML = '✅ API connected. Ready to scan.';
-        } else {
-            document.getElementById('status').innerHTML = '❌ API not reachable. Check server.';
-        }
+    window.addEventListener('load', () => {
+       document.getElementById('status').innerHTML = '✅ Ready to scan. Click Scan Now.';
     });
   </script>
 </body>
