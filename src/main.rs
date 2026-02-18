@@ -881,8 +881,10 @@ impl ArbitrageDetector {
                }
            }
        }
-    
+        
+       let profitable_count = opportunities.len(); 
        println!("\n📊 Found {} profitable opportunities", opportunities.len());
+        
        (opportunities, total_paths_checked, opportunities.len())
     }
     
