@@ -908,6 +908,7 @@ impl ArbitrageDetector {
         println!("🔨 Building currency graph for {}...", exchange);
         let (graph, node_indices) = self.build_graph(&tickers);
         println!("📈 Graph has {} nodes and {} edges", graph.node_count(), graph.edge_count());
+        self.debug_graph(&graph, &node_indices, &tickers); //    
     
         println!("🔎 Running Bellman-Ford to find arbitrage opportunities...");
         let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
