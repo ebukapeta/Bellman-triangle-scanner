@@ -83,32 +83,48 @@ impl BinanceWebSocketCollector {
     }
 
     fn parse_symbol(symbol: &str) -> Option<(String, String)> {
-        let s = symbol.to_uppercase();
-        const QUOTES: [&str; 24] = [
-            "USDT", "BUSD", "USDC", "FDUSD", "TUSD", "BTC", "ETH", "BNB", "TRY", "EUR", "GBP", "AUD",
-            "BRL", "CAD", "ARS", "RUB", "ZAR", "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN",
-        ];
+       let s = symbol.to_uppercase();
+    
+    // Common quote currencies (stablecoins and major coins)
+       const QUOTES: [&str; 30] = [
+           "USDT", "BUSD", "USDC", "FDUSD", "TUSD", "DAI", 
+           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE",
+           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", 
+           "RUB", "ZAR", "NGN", "UAH", "IDR", "JPY", "KRW", 
+           "VND", "MXN", "CHF"
+       ];
 
-        for q in &QUOTES {
-            if s.ends_with(*q) && s.len() > q.len() {
-                let base = s[..s.len() - q.len()].to_string();
-                return Some((base, q.to_string()));
-        }
-        }
+       for q in &QUOTES {
+           if s.ends_with(*q) && s.len() > q.len() {
+               let base = s[..s.len() - q.len()].to_string();
+            // Avoid cases where base is empty or too short
+               if !base.is_empty() && base.len() >= 2 {
+                   return Some((base, q.to_string()));
+               }
+           }
+       }
 
-        if s.len() > 6 {
-            let try3 = s.split_at(s.len() - 3);
-            if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
-                return Some((try3.0.to_string(), try3.1.to_string()));
-            }
-        }
-        if s.len() > 7 {
-            let try4 = s.split_at(s.len() - 4);
-            if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
-                return Some((try4.0.to_string(), try4.1.to_string()));
-            }
-        }
-        None
+    // Fallback: try to split by common patterns
+       if s.len() > 6 {
+           let try3 = s.split_at(s.len() - 3);
+           if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
+               return Some((try3.0.to_string(), try3.1.to_string()));
+           }
+       }
+       if s.len() > 7 {
+           let try4 = s.split_at(s.len() - 4);
+           if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
+               return Some((try4.0.to_string(), try4.1.to_string()));
+           }
+       }
+       if s.len() > 8 {
+           let try5 = s.split_at(s.len() - 5);
+           if try5.1.chars().all(|c| c.is_ascii_alphabetic()) {
+               return Some((try5.0.to_string(), try5.1.to_string()));
+           }
+       }
+    
+       None
     }
 
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
