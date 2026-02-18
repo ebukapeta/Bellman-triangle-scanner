@@ -12,6 +12,7 @@ use tokio::time::{Duration, Instant};
 use chrono::{Utc, Local};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::algo::bellman_ford;
+use petgraph::algo::find_negative_cycle;
 use petgraph::visit::EdgeRef;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -791,63 +792,44 @@ impl ArbitrageDetector {
                              tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize) {
        let mut opportunities = Vec::new();
        let mut total_paths_checked = 0;
-       let mut negative_cycles_found = 0;
     
        println!("🔎 Starting Bellman-Ford search...");
        let nodes: Vec<_> = graph.node_indices().collect();
        println!("Total nodes to check: {}", nodes.len());
     
-       for (start_idx, &start_node) in nodes.iter().enumerate().take(20) { // Check first 20 nodes
+       for (start_idx, &start_node) in nodes.iter().enumerate().take(20) {
            println!("\n--- Running Bellman-Ford from node {}: '{}' ---", start_idx, graph[start_node]);
         
+        // Run Bellman-Ford to get distances and predecessors
            match bellman_ford(graph, start_node) {
                Ok(paths) => {
                    let distances = paths.distances;
                    let predecessors = paths.predecessors;
                 
-                   println!("  Distances calculated for {} nodes", distances.len());
-                
-                // Check for negative cycles by looking for further improvements
-                   let edges = graph.raw_edges();
-                   for (edge_idx, edge) in edges.iter().enumerate() {
+                // Check for negative cycles by looking for edges that can still be relaxed
+                   for edge in graph.raw_edges() {
                        let u = edge.source();
                        let v = edge.target();
-                       let u_name = &graph[u];
-                       let v_name = &graph[v];
                     
-                       let dist_u = distances[u.index()];
-                       let dist_v = distances[v.index()];
-                       let weight = edge.weight;
-                    
-                       if dist_u + weight < dist_v - 1e-10 {
+                       if distances[u.index()] + edge.weight < distances[v.index()] - 1e-10 {
                         // Found a negative cycle!
                            total_paths_checked += 1;
-                           println!("  🔥 FOUND NEGATIVE CYCLE at edge {}: {} -> {}", edge_idx, u_name, v_name);
-                           println!("    dist[{}] = {:.6}", u_name, dist_u);
-                           println!("    dist[{}] = {:.6}", v_name, dist_v);
-                           println!("    {} + {:.6} = {:.6} < {}", dist_u, weight, dist_u + weight, dist_v);
-                     
-                        // Reconstruct the cycle using predecessors
-                           if let Some(cycle) = self.reconstruct_cycle(&predecessors, v) {
-                               println!("    Cycle found with {} nodes", cycle.len());
+                        
+                        // Use petgraph's built-in function to find the actual cycle
+                           if let Some(cycle) = find_negative_cycle(graph, start_node) {
                                let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
-                               println!("    Path: {:?}", path);
+                               println!("  🔥 Found negative cycle: {:?}", path);
                             
-                               if cycle.len() == 3 || cycle.len() == 4 {
-                                   println!("    ✓ This is a triangle/quad cycle");
-                                
+                               if path.len() >= 3 {
                                    let profit = self.calculate_cycle_profit(&path, tickers);
-                                   println!("    Profit: {:.4}%", profit);
                                 
                                    if profit > min_profit {
-                                       println!("    ✅ Profit > threshold ({:.2}%)", min_profit);
                                        let chance = self.calculate_execution_chance(&path, tickers);
                                     
                                        if chance > 70.0 {
                                            let pair = path.join(" → ");
-                                        
                                            opportunities.push(ArbitrageOpportunity {
-                                               pair: pair.clone(),
+                                               pair,
                                                triangle: path,
                                                profit_margin_before: profit,
                                                profit_margin_after: profit * 0.9,
@@ -856,37 +838,52 @@ impl ArbitrageDetector {
                                                exchange: "unknown".to_string(),
                                                estimated_slippage: profit * 0.1,
                                            });
-                                           negative_cycles_found += 1;
-                                       } else {
-                                           println!("    ❌ Chance too low: {:.1}%", chance);
                                        }
-                                   } else {
-                                       println!("    ❌ Profit too low: {:.4}% < {:.2}%", profit, min_profit);
                                    }
-                               } else {
-                                   println!("    ❌ Not a triangle (len={})", cycle.len());
                                }
-                           } else {
-                               println!("    ❌ Could not reconstruct cycle");
                            }
                            break; // Found a cycle, move to next start node
                        }
                    }
                }
                Err(_) => {
-                   println!("  ⚠️ Bellman-Ford reported a negative cycle from {}", graph[start_node]);
-                   println!("  This confirms negative cycles exist in the graph!");
-                   negative_cycles_found += 1;
-                   continue;
+                // Bellman-Ford detected a negative cycle but couldn't return predecessors
+                // Use find_negative_cycle directly
+                   println!("  ⚠️ Negative cycle detected from {}, extracting...", graph[start_node]);
+                
+                   if let Some(cycle) = find_negative_cycle(graph, start_node) {
+                       total_paths_checked += 1;
+                       let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
+                       println!("  🔥 Extracted cycle: {:?}", path);
+                    
+                       if path.len() >= 3 {
+                           let profit = self.calculate_cycle_profit(&path, tickers);
+                        
+                           if profit > min_profit {
+                               let chance = self.calculate_execution_chance(&path, tickers);
+                            
+                               if chance > 70.0 {
+                                   let pair = path.join(" → ");
+                                   opportunities.push(ArbitrageOpportunity {
+                                       pair,
+                                       triangle: path,
+                                       profit_margin_before: profit,
+                                       profit_margin_after: profit * 0.9,
+                                       chance_of_executing: chance,
+                                       timestamp: Utc::now().timestamp_millis(),
+                                       exchange: "unknown".to_string(),
+                                       estimated_slippage: profit * 0.1,
+                                   });
+                               }
+                           }
+                       }
+                   }
                }
            }
        }
     
-       println!("\n📊 Final results: {} paths checked, {} negative cycles found, {} profitable triangles", 
-             total_paths_checked, negative_cycles_found, opportunities.len());
-    
-       let profitable_count = opportunities.len();
-       (opportunities, total_paths_checked, profitable_count)
+       println!("\n📊 Found {} profitable opportunities", opportunities.len());
+       (opportunities, total_paths_checked, opportunities.len())
     }
     
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex) -> Option<Vec<NodeIndex>> {
