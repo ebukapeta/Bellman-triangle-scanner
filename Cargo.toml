@@ -17,3 +17,6 @@ petgraph = "0.6"
 reqwest = { version = "0.11", features = ["json", "native-tls"] }
 env_logger = "0.11"
 log = "0.4"
+
+[patch.crates-io]
+native-tls = { git = "https://github.com/sfackler/rust-native-tls", rev = "8c7892c" }
