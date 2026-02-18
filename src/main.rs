@@ -807,8 +807,9 @@ impl ArbitrageDetector {
                 
                    println!("  Distances calculated for {} nodes", distances.len());
                 
-                // Check each edge for negative cycles
-                   for (edge_idx, edge) in graph.raw_edges().enumerate() {
+                // Convert raw edges to iterable
+                   let edges = graph.raw_edges();
+                   for (edge_idx, edge) in edges.iter().enumerate() {
                        let u = edge.source();
                        let v = edge.target();
                        let u_name = &graph[u];
@@ -894,8 +895,8 @@ impl ArbitrageDetector {
                        }
                    }
                }
-               Err(NegativeCycle) => {
-                   println!("  Bellman-Ford reported a negative cycle from {}", graph[start_node]);
+               Err(e) => {
+                   println!("  Bellman-Ford error: {:?}", e);
                    continue;
                }
            }
@@ -907,7 +908,7 @@ impl ArbitrageDetector {
        let profitable_count = opportunities.len();
        (opportunities, total_paths_checked, profitable_count)
     }
-
+    
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex) -> Option<Vec<NodeIndex>> {
         let mut cycle = Vec::new();
         let mut visited = HashSet::new();
