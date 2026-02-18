@@ -520,7 +520,7 @@
                     <td>${(opp.profit_margin_after || 0).toFixed(3)}%</td>
                     <td class="${chanceClass}">${(opp.chance_of_executing || 0).toFixed(1)}%</td>
                     <td>${(opp.estimated_slippage || 0).toFixed(3)}%</td>
-                    <td><button class="view-btn" onclick='alert("Triangle Path:\\n${(opp.triangle || []).join(' → ')}")'>View</button></td>
+                    <td><button class="view-btn" onclick='showTradePath("${opp.exchange}", ${JSON.stringify(opp.triangle)})'>View</button></td>
                 `;
                 tableBody.appendChild(row);
             });
@@ -556,6 +556,26 @@
     window.addEventListener('load', () => {
        document.getElementById('status').innerHTML = '✅ Ready to scan. Click Scan Now.';
     });
+        
+    function showTradePath(exchange, triangle) {
+    // Convert currency path to trading pairs
+    let pairs = [];
+    for (let i = 0; i < triangle.length - 1; i++) {
+        pairs.push(`${triangle[i]}/${triangle[i+1]}`);
+    }
+    
+    // Create the message
+    let message = `Exchange: ${exchange.toUpperCase()}\n\n`;
+    message += `Trading Path:\n`;
+    pairs.forEach((pair, index) => {
+        message += `${index + 1}. ${pair}\n`;
+    });
+    
+    // Add the full cycle
+    message += `\nFull Cycle: ${triangle.join(' → ')}`;
+    
+    alert(message);
+    }
   </script>
 </body>
 </html>
