@@ -881,11 +881,12 @@ impl ArbitrageDetector {
                }
            }
        }
-        
-       let profitable_count = opportunities.len(); 
-       println!("\n📊 Found {} profitable opportunities", opportunities.len());
-        
-       (opportunities, total_paths_checked, opportunities.len())
+    
+       let profitable_count = opportunities.len();
+       println!("\n📊 Found {} profitable opportunities", profitable_count);
+    
+    // Return opportunities WITHOUT moving it twice
+       (opportunities, total_paths_checked, profitable_count)
     }
     
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex) -> Option<Vec<NodeIndex>> {
