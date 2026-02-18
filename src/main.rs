@@ -797,7 +797,7 @@ impl ArbitrageDetector {
        let nodes: Vec<_> = graph.node_indices().collect();
        println!("Total nodes to check: {}", nodes.len());
     
-       for (start_idx, &start_node) in nodes.iter().enumerate().take(10) { // Check first 10 nodes
+       for (start_idx, &start_node) in nodes.iter().enumerate().take(20) { // Check first 20 nodes
            println!("\n--- Running Bellman-Ford from node {}: '{}' ---", start_idx, graph[start_node]);
         
            match bellman_ford(graph, start_node) {
@@ -807,7 +807,7 @@ impl ArbitrageDetector {
                 
                    println!("  Distances calculated for {} nodes", distances.len());
                 
-                // Convert raw edges to iterable
+                // Check for negative cycles by looking for further improvements
                    let edges = graph.raw_edges();
                    for (edge_idx, edge) in edges.iter().enumerate() {
                        let u = edge.source();
@@ -820,14 +820,14 @@ impl ArbitrageDetector {
                        let weight = edge.weight;
                     
                        if dist_u + weight < dist_v - 1e-10 {
+                        // Found a negative cycle!
                            total_paths_checked += 1;
-                           println!("  🔥 POTENTIAL NEGATIVE CYCLE at edge {}: {} -> {} (weight: {:.6})", 
-                                 edge_idx, u_name, v_name, weight);
+                           println!("  🔥 FOUND NEGATIVE CYCLE at edge {}: {} -> {}", edge_idx, u_name, v_name);
                            println!("    dist[{}] = {:.6}", u_name, dist_u);
                            println!("    dist[{}] = {:.6}", v_name, dist_v);
                            println!("    {} + {:.6} = {:.6} < {}", dist_u, weight, dist_u + weight, dist_v);
-                        
-                        // Try to reconstruct the cycle
+                     
+                        // Reconstruct the cycle using predecessors
                            if let Some(cycle) = self.reconstruct_cycle(&predecessors, v) {
                                println!("    Cycle found with {} nodes", cycle.len());
                                let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
@@ -836,30 +836,8 @@ impl ArbitrageDetector {
                                if cycle.len() == 3 || cycle.len() == 4 {
                                    println!("    ✓ This is a triangle/quad cycle");
                                 
-                                // Calculate profit manually to verify
-                                   let mut manual_amount = 1.0;
-                                   println!("    Manual profit calculation:");
-                                   for i in 0..path.len() - 1 {
-                                       let from = &path[i];
-                                       let to = &path[i + 1];
-                                       let symbol = format!("{}{}", from, to);
-                                       let rev_symbol = format!("{}{}", to, from);
-                                    
-                                       if let Some((bid, ask, _)) = tickers.get(&symbol) {
-                                           manual_amount *= bid;
-                                           println!("      {} -> {}: bid={:.6} (from {})", from, to, bid, symbol);
-                                       } else if let Some((bid, ask, _)) = tickers.get(&rev_symbol) {
-                                           manual_amount *= 1.0 / ask;
-                                           println!("      {} -> {}: 1/ask={:.6} (from {})", from, to, 1.0/ask, rev_symbol);
-                                       } else {
-                                           println!("      {} -> {}: NO RATE FOUND!", from, to);
-                                       }
-                                   }
-                                   let manual_profit = (manual_amount - 1.0) * 100.0;
-                                   println!("    Manual amount: {:.6}, profit: {:.4}%", manual_amount, manual_profit);
-                                
                                    let profit = self.calculate_cycle_profit(&path, tickers);
-                                   println!("    Function profit: {:.4}%", profit);
+                                   println!("    Profit: {:.4}%", profit);
                                 
                                    if profit > min_profit {
                                        println!("    ✅ Profit > threshold ({:.2}%)", min_profit);
@@ -895,8 +873,10 @@ impl ArbitrageDetector {
                        }
                    }
                }
-               Err(e) => {
-                   println!("  Bellman-Ford error: {:?}", e);
+               Err(_) => {
+                   println!("  ⚠️ Bellman-Ford reported a negative cycle from {}", graph[start_node]);
+                   println!("  This confirms negative cycles exist in the graph!");
+                   negative_cycles_found += 1;
                    continue;
                }
            }
