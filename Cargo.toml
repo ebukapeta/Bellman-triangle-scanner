@@ -19,4 +19,4 @@ env_logger = "0.10"
 log = "0.4"
 
 [patch.crates-io]
-native-tls = { git = "https://github.com/sfackler/rust-native-tls", rev = "c8b3e9c" }
+native-tls = { version = "=0.2.16" }
