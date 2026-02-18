@@ -12,6 +12,7 @@ use tokio::time::{Duration, Instant};
 use chrono::{Utc, Local};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::algo::bellman_ford;
+use petgraph::visit::EdgeRef;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
