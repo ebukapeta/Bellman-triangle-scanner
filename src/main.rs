@@ -688,64 +688,86 @@ impl ArbitrageDetector {
 
     // Add this method to ArbitrageDetector
     fn debug_graph(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, tickers: &HashMap<String, (f64, f64, i64)>) {
-       println!("=== GRAPH DEBUG ===");
-       println!("Nodes: {}", graph.node_count());
-       println!("Edges: {}", graph.edge_count());
+    println!("=== GRAPH DEBUG ===");
+    println!("Nodes: {}", graph.node_count());
+    println!("Edges: {}", graph.edge_count());
     
-       // Print first 10 edges as examples
-       let mut edge_count = 0;
-       for edge in graph.raw_edges() {
-          if edge_count >= 10 { break; }
-          let source = graph[edge.source()].clone();
-          let target = graph[edge.target()].clone();
-          println!("  {} -> {} : weight = {:.6}", source, target, edge.weight);
-          edge_count += 1;
-       }
+    // Show first 20 nodes as sample
+    println!("Sample nodes (first 20):");
+    let mut node_count = 0;
+    for node in graph.node_indices() {
+        if node_count >= 20 { break; }
+        println!("  {}: {}", node.index(), graph[node]);
+        node_count += 1;
+    }
     
-       // Check a few specific pairs that should exist
-       let test_pairs = vec!["BTCUSDT", "ETHUSDT", "BNBUSDT"];
-       for pair in test_pairs {
-          if let Some((bid, ask, _)) = tickers.get(pair) {
-              println!("{}: bid={:.2}, ask={:.2}, spread={:.4}%", pair, bid, ask, (ask-bid)/bid*100.0);
-          } else {
-              println!("{}: NOT FOUND in tickers", pair);
-          }
-       }
+    // Show all edges for a few currencies to see cycles
+    let test_currencies = vec!["BTC", "ETH", "BNB", "USDT"];
+    for currency in test_currencies {
+        if let Some(&idx) = node_indices.get(currency) {
+            println!("Edges involving {}:", currency);
+            for edge in graph.edges_directed(idx, petgraph::Direction::Outgoing) {
+                let target = graph[edge.target()].clone();
+                println!("  {} -> {} : weight = {:.6}", currency, target, *edge.weight());
+            }
+            for edge in graph.edges_directed(idx, petgraph::Direction::Incoming) {
+                let source = graph[edge.source()].clone();
+                println!("  {} <- {} : weight = {:.6}", currency, source, *edge.weight());
+            }
+        } else {
+            println!("{} not found in graph nodes", currency);
+            // Show what similar nodes exist
+            println!("  Looking for similar nodes:");
+            for node in graph.node_indices() {
+                let name = &graph[node];
+                if name.contains("BTC") || name.contains("ETH") || name.contains("BNB") {
+                    println!("    Found: {}", name);
+                }
+            }
+        }
+    }
     
-       // Test a simple triangle: BTC -> USDT -> ETH -> BTC
-       if let (Some(btc_idx), Some(usdt_idx), Some(eth_idx)) = (
-          node_indices.get("BTC"),
-          node_indices.get("USDT"),
-          node_indices.get("ETH")
-       ) {
-          // Find edges
-          let mut btc_to_usdt = None;
-          let mut usdt_to_eth = None;
-          let mut eth_to_btc = None;
-        
-          for edge in graph.raw_edges() {
-              if edge.source() == *btc_idx && edge.target() == *usdt_idx {
-                 btc_to_usdt = Some(edge.weight);
-              } else if edge.source() == *usdt_idx && edge.target() == *eth_idx {
-                usdt_to_eth = Some(edge.weight);
-              } else if edge.source() == *eth_idx && edge.target() == *btc_idx {
-                eth_to_btc = Some(edge.weight);
+    // Manually check a few pairs to verify prices
+    println!("Sample pair prices:");
+    let sample_pairs = vec!["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
+    for pair in sample_pairs {
+        if let Some((bid, ask, ts)) = tickers.get(pair) {
+            println!("  {}: bid={:.2}, ask={:.2}, spread={:.4}%", pair, bid, ask, (ask-bid)/bid*100.0);
+        }
+    }
+    
+    // Try to find any cycle by brute force for small subset
+    println!("Checking for simple 3-currency cycles:");
+    let top_nodes: Vec<_> = graph.node_indices().take(10).collect();
+    for i in 0..top_nodes.len() {
+        for j in 0..top_nodes.len() {
+            if i == j { continue; }
+            for k in 0..top_nodes.len() {
+                if k == i || k == j { continue; }
+                
+                // Check if cycle exists
+                let a = top_nodes[i];
+                let b = top_nodes[j];
+                let c = top_nodes[k];
+                
+                let ab = graph.find_edge(a, b);
+                let bc = graph.find_edge(b, c);
+                let ca = graph.find_edge(c, a);
+                
+                if let (Some(ab_e), Some(bc_e), Some(ca_e)) = (ab, bc, ca) {
+                      let weight_sum = graph[ab_e] + graph[bc_e] + graph[ca_e];
+                      let names = (graph[a].clone(), graph[b].clone(), graph[c].clone());
+                      println!("  Cycle {}->{}->{}->{}: total weight = {:.6}", names.0, names.1, names.2, names.0, weight_sum);
+                      if weight_sum < 0.0 {
+                          let profit = (-weight_sum).exp() - 1.0;
+                          println!("    🔥 NEGATIVE CYCLE! Profit: {:.4}%", profit * 100.0);
+                      }
+                  }
               }
           }
-        
-          if let (Some(w1), Some(w2), Some(w3)) = (btc_to_usdt, usdt_to_eth, eth_to_btc) {
-               let total_weight = w1 + w2 + w3;
-               println!("BTC->USDT->ETH->BTC cycle weight: {:.6}", total_weight);
-               if total_weight < 0.0 {
-                   let profit = (-total_weight).exp() - 1.0;
-                   println!("  This is a negative cycle! Profit: {:.4}%", profit * 100.0);
-               } else {
-                  println!("  Not a negative cycle (need <0, got {:.6})", total_weight);
-               }
-           }
-       }
+      }
     
-       println!("=== END DEBUG ===");
+      println!("=== END DEBUG ===");
     }
 
     fn find_profitable_triangles(&self, graph: &DiGraph<String, f64>, _node_indices: &HashMap<String, NodeIndex>, 
