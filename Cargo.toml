@@ -10,11 +10,14 @@ actix-files = "0.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.37", features = ["full"] }
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.20", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 chrono = "0.4"
 petgraph = "0.6"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 env_logger = "0.11"
 log = "0.4"
-rustls = "0.21"
+
+# Override native-tls to a version that doesn't have the pattern matching issue
+[patch.crates-io]
+native-tls = { git = "https://github.com/sfackler/rust-native-tls", branch = "old-tls" }
