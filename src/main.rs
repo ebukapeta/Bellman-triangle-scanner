@@ -881,6 +881,19 @@ impl ArbitrageDetector {
                }
            }
        }
+
+       // Deduplicate cycles
+       let mut seen = HashSet::new();
+       opportunities.retain(|opp| {
+          let mut cycle = opp.triangle.clone();
+          cycle.sort(); // Sort to treat rotations as same cycle
+          if seen.contains(&cycle) {
+             false
+          } else {
+             seen.insert(cycle);
+             true
+          }
+       });
     
        let profitable_count = opportunities.len();
        println!("\n📊 Found {} profitable opportunities", profitable_count);
@@ -918,24 +931,42 @@ impl ArbitrageDetector {
     }
 
     fn calculate_cycle_profit(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
-        let mut amount = 1.0;
+       let mut amount = 1.0;
+    
+       for i in 0..path.len() - 1 {
+           let from = &path[i];
+           let to = &path[i + 1];
         
-        for i in 0..path.len() - 1 {
-            let from = &path[i];
-            let to = &path[i + 1];
-            let symbol = format!("{}{}", from, to);
-            
-            if let Some((bid, _, _)) = tickers.get(&symbol) {
-                amount *= bid;
-            } else {
-                let rev_symbol = format!("{}{}", to, from);
-                if let Some((_, ask, _)) = tickers.get(&rev_symbol) {
-                    amount *= 1.0 / ask;
-                }
-            }
-        }
+        // Try direct pair
+           let direct_pair = format!("{}{}", from, to);
+           if let Some((bid, _, _)) = tickers.get(&direct_pair) {
+               amount *= bid;
+               continue;
+           }
         
-        (amount - 1.0) * 100.0
+        // Try reverse pair
+           let reverse_pair = format!("{}{}", to, from);
+           if let Some((_, ask, _)) = tickers.get(&reverse_pair) {
+               amount *= 1.0 / ask;
+               continue;
+           }
+        
+        // If no pair found, log warning
+           println!("WARNING: No rate found for {} → {}", from, to);
+           return 0.0;
+       }
+    
+    // Calculate profit percentage
+       let profit = (amount - 1.0) * 100.0;
+    
+    // Sanity check - if profit is over 1000%, something's wrong
+       if profit > 1000.0 {
+           println!("WARNING: Suspiciously high profit: {}%", profit);
+           println!("Path: {:?}", path);
+           println!("Amount multiplier: {}", amount);
+       }
+    
+       profit
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
