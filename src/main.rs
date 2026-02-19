@@ -813,36 +813,36 @@ impl ArbitrageDetector {
                        if distances[u.index()] + edge.weight < distances[v.index()] - 1e-10 {
                            total_paths_checked += 1;
                         
-                           if let Some(cycle) = reconstruct_cycle(&predecessors, v) {
-                            // Ensure cycle returns to start and has at least 3 nodes
-                               if cycle.len() >= 3 && cycle.first() == cycle.last() {
-                                   let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
-                                   println!("  🔥 Found cycle: {:?}", path);
-                                
-                                // Calculate REAL profit
-                                   let profit = self.calculate_real_profit(&path, tickers);
-                                
-                                // Only include if profit is positive and reasonable
-                                   if profit > min_profit && profit < 100.0 {
-                                       println!("  ✅ Valid profit: {:.4}%", profit);
-                                    
-                                       let chance = self.calculate_execution_chance(&path, tickers);
-                                       let pair = path.join(" → ");
-                                    
-                                       opportunities.push(ArbitrageOpportunity {
-                                           pair,
-                                           triangle: path,
-                                           profit_margin_before: profit,
-                                           profit_margin_after: profit * 0.9, // Approx fees
-                                           chance_of_executing: chance,
-                                           timestamp: Utc::now().timestamp_millis(),
-                                           exchange: "unknown".to_string(),
-                                           estimated_slippage: profit * 0.1,
-                                       });
-                                   } else {
-                                       println!("  ❌ Invalid profit: {:.4}%", profit);
-                                   }
-                               }
+                           if let Some(cycle_nodes) = self.reconstruct_cycle(&predecessors, v) {
+    // Ensure cycle returns to start and has at least 3 nodes
+                               if cycle_nodes.len() >= 3 && cycle_nodes.first() == cycle_nodes.last() {
+                                  let path: Vec<String> = cycle_nodes.iter().map(|&idx| graph[idx].clone()).collect();
+                                  println!("  🔥 Found cycle: {:?}", path);
+        
+        // Calculate REAL profit
+                                  let profit = self.calculate_real_profit(&path, tickers);
+        
+        // Only include if profit is positive and reasonable
+                                  if profit > min_profit && profit < 100.0 {
+                                  println!("  ✅ Valid profit: {:.4}%", profit);
+            
+                                     let chance = self.calculate_execution_chance(&path, tickers);
+                                     let pair = path.join(" → ");
+            
+                                     opportunities.push(ArbitrageOpportunity {
+                                        pair,
+                                        triangle: path,
+                                        profit_margin_before: profit,
+                                        profit_margin_after: profit * 0.9,
+                                        chance_of_executing: chance,
+                                        timestamp: Utc::now().timestamp_millis(),
+                                        exchange: "unknown".to_string(),
+                                        estimated_slippage: profit * 0.1,
+                                    });
+                                 } else {
+                                    println!("  ❌ Invalid profit: {:.4}%", profit);
+                                 }
+                              }
                            }
                            break;
                        }
