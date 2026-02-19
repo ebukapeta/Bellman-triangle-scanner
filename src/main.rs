@@ -1047,6 +1047,48 @@ impl ArbitrageDetector {
         println!("🔨 Building currency graph for {}...", exchange);
         let (graph, node_indices) = self.build_graph(&tickers);
         println!("📈 Graph has {} nodes and {} edges", graph.node_count(), graph.edge_count());
+
+        // === ADD THIS TEMPORARY DEBUG CODE ===
+        println!("\n=== CHECKING ETH-BTC EDGE SPECIFICALLY ===");
+        if let (Some(&btc_idx), Some(&eth_idx)) = (node_indices.get("BTC"), node_indices.get("ETH")) {
+    // Check all edges involving BTC and ETH
+           println!("Checking edges between ETH and BTC:");
+    
+    // Check ETH -> BTC
+           let eth_to_btc = graph.find_edge(eth_idx, btc_idx);
+           println!("  ETH -> BTC edge exists: {}", eth_to_btc.is_some());
+           if let Some(edge_idx) = eth_to_btc {
+              println!("    Weight: {:.6}", graph[edge_idx]);
+           }
+    
+    // Check BTC -> ETH
+           let btc_to_eth = graph.find_edge(btc_idx, eth_idx);
+           println!("  BTC -> ETH edge exists: {}", btc_to_eth.is_some());
+           if let Some(edge_idx) = btc_to_eth {
+              println!("    Weight: {:.6}", graph[edge_idx]);
+           }
+    
+    // Look at all tickers that might contain ETH/BTC
+           println!("\nSearching for ETH/BTC in tickers:");
+           for (sym, (bid, ask, _)) in tickers.iter() {
+              if sym.contains("ETH") && sym.contains("BTC") {
+                 println!("  Found: {} - bid={}, ask={}", sym, bid, ask);
+                 if let Some((base, quote)) = Self::parse_symbol(sym) {
+                    println!("    Parsed as: {}/{}", base, quote);
+                 }
+              }
+           }
+        } else {
+           println!("BTC or ETH node not found in graph!");
+           if node_indices.get("BTC").is_none() {
+              println!("  BTC node missing");
+           }
+           if node_indices.get("ETH").is_none() {
+              println!("  ETH node missing");
+           }
+        }
+// === END TEMPORARY DEBUG CODE ===   
+           
         self.debug_graph(&graph, &node_indices, &tickers); //  
 
         // Add this right after you build the graph
