@@ -800,106 +800,103 @@ impl ArbitrageDetector {
        for (start_idx, &start_node) in nodes.iter().enumerate().take(20) {
            println!("\n--- Running Bellman-Ford from node {}: '{}' ---", start_idx, graph[start_node]);
         
-        // Run Bellman-Ford to get distances and predecessors
            match bellman_ford(graph, start_node) {
                Ok(paths) => {
                    let distances = paths.distances;
                    let predecessors = paths.predecessors;
                 
-                // Check for negative cycles by looking for edges that can still be relaxed
+                // Check for negative cycles
                    for edge in graph.raw_edges() {
                        let u = edge.source();
                        let v = edge.target();
                     
                        if distances[u.index()] + edge.weight < distances[v.index()] - 1e-10 {
-                        // Found a negative cycle!
                            total_paths_checked += 1;
                         
-                        // Use petgraph's built-in function to find the actual cycle
-                           if let Some(cycle) = find_negative_cycle(graph, start_node) {
-                               let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
-                               println!("  🔥 Found negative cycle: {:?}", path);
-                            
-                               if path.len() >= 3 {
-                                   let profit = self.calculate_cycle_profit(&path, tickers);
+                           if let Some(cycle) = reconstruct_cycle(&predecessors, v) {
+                            // Ensure cycle returns to start and has at least 3 nodes
+                               if cycle.len() >= 3 && cycle.first() == cycle.last() {
+                                   let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
+                                   println!("  🔥 Found cycle: {:?}", path);
                                 
-                                   if profit > min_profit {
-                                       let chance = self.calculate_execution_chance(&path, tickers);
+                                // Calculate REAL profit
+                                   let profit = self.calculate_real_profit(&path, tickers);
+                                
+                                // Only include if profit is positive and reasonable
+                                   if profit > min_profit && profit < 100.0 {
+                                       println!("  ✅ Valid profit: {:.4}%", profit);
                                     
-                                       if chance > 70.0 {
-                                           let pair = path.join(" → ");
-                                           opportunities.push(ArbitrageOpportunity {
-                                               pair,
-                                               triangle: path,
-                                               profit_margin_before: profit,
-                                               profit_margin_after: profit * 0.9,
-                                               chance_of_executing: chance,
-                                               timestamp: Utc::now().timestamp_millis(),
-                                               exchange: "unknown".to_string(),
-                                               estimated_slippage: profit * 0.1,
-                                           });
-                                       }
+                                       let chance = self.calculate_execution_chance(&path, tickers);
+                                       let pair = path.join(" → ");
+                                    
+                                       opportunities.push(ArbitrageOpportunity {
+                                           pair,
+                                           triangle: path,
+                                           profit_margin_before: profit,
+                                           profit_margin_after: profit * 0.9, // Approx fees
+                                           chance_of_executing: chance,
+                                           timestamp: Utc::now().timestamp_millis(),
+                                           exchange: "unknown".to_string(),
+                                           estimated_slippage: profit * 0.1,
+                                       });
+                                   } else {
+                                       println!("  ❌ Invalid profit: {:.4}%", profit);
                                    }
                                }
                            }
-                           break; // Found a cycle, move to next start node
+                           break;
                        }
                    }
                }
                Err(_) => {
-                // Bellman-Ford detected a negative cycle but couldn't return predecessors
-                // Use find_negative_cycle directly
-                   println!("  ⚠️ Negative cycle detected from {}, extracting...", graph[start_node]);
+                   println!("  ⚠️ Negative cycle detected from {}", graph[start_node]);
                 
+                // Extract cycle using find_negative_cycle
                    if let Some(cycle) = find_negative_cycle(graph, start_node) {
-                       total_paths_checked += 1;
                        let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
-                       println!("  🔥 Extracted cycle: {:?}", path);
                     
-                       if path.len() >= 3 {
-                           let profit = self.calculate_cycle_profit(&path, tickers);
+                    // Verify cycle returns to start
+                       if path.len() >= 3 && path.first() == path.last() {
+                           println!("  🔥 Extracted cycle: {:?}", path);
                         
-                           if profit > min_profit {
+                           let profit = self.calculate_real_profit(&path, tickers);
+                        
+                           if profit > min_profit && profit < 100.0 {
                                let chance = self.calculate_execution_chance(&path, tickers);
+                               let pair = path.join(" → ");
                             
-                               if chance > 70.0 {
-                                   let pair = path.join(" → ");
-                                   opportunities.push(ArbitrageOpportunity {
-                                       pair,
-                                       triangle: path,
-                                       profit_margin_before: profit,
-                                       profit_margin_after: profit * 0.9,
-                                       chance_of_executing: chance,
-                                       timestamp: Utc::now().timestamp_millis(),
-                                       exchange: "unknown".to_string(),
-                                       estimated_slippage: profit * 0.1,
-                                   });
-                               }
+                               opportunities.push(ArbitrageOpportunity {
+                                   pair,
+                                   triangle: path,
+                                   profit_margin_before: profit,
+                                   profit_margin_after: profit * 0.9,
+                                   chance_of_executing: chance,
+                                   timestamp: Utc::now().timestamp_millis(),
+                                   exchange: "unknown".to_string(),
+                                   estimated_slippage: profit * 0.1,
+                               });
                            }
                        }
                    }
                }
            }
        }
-
-       // Deduplicate cycles
-       let mut seen = HashSet::new();
+    
+    // Deduplicate
+       let mut seen = std::collections::HashSet::new();
        opportunities.retain(|opp| {
-          let mut cycle = opp.triangle.clone();
-          cycle.sort(); // Sort to treat rotations as same cycle
-          if seen.contains(&cycle) {
-             false
-          } else {
-             seen.insert(cycle);
-             true
-          }
+           let mut cycle = opp.triangle.clone();
+           cycle.sort();
+           if seen.contains(&cycle) {
+               false
+           } else {
+               seen.insert(cycle);
+               true
+           }
        });
     
-       let profitable_count = opportunities.len();
-       println!("\n📊 Found {} profitable opportunities", profitable_count);
-    
-    // Return opportunities WITHOUT moving it twice
-       (opportunities, total_paths_checked, profitable_count)
+       println!("\n📊 Found {} unique opportunities", opportunities.len());
+       (opportunities, total_paths_checked, opportunities.len())
     }
     
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex) -> Option<Vec<NodeIndex>> {
@@ -967,6 +964,41 @@ impl ArbitrageDetector {
        }
     
        profit
+    }
+
+    fn calculate_real_profit(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
+    // Path must return to start (e.g., BTC → ETH → USDT → BTC)
+       if path.len() < 3 || path.first() != path.last() {
+           return -100.0;
+       }
+    
+       let mut amount = 1.0;
+    
+       for i in 0..path.len() - 1 {
+           let from = &path[i];
+           let to = &path[i + 1];
+        
+        // Try direct pair
+           let pair = format!("{}{}", from, to);
+           if let Some((bid, ask, _)) = tickers.get(&pair) {
+            // For forward direction (base → quote), use bid price
+               amount *= bid;
+               continue;
+           }
+        
+        // Try reverse pair
+           let reverse_pair = format!("{}{}", to, from);
+           if let Some((bid, ask, _)) = tickers.get(&reverse_pair) {
+            // For reverse direction (quote → base), use 1/ask
+               amount *= 1.0 / ask;
+               continue;
+           }
+        
+           return -100.0; // Missing rate
+       }
+    
+    // Profit as percentage
+       (amount - 1.0) * 100.0
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
