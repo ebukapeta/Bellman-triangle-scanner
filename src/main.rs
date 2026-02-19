@@ -629,38 +629,47 @@ impl ArbitrageDetector {
     }
 
     fn build_graph(&self, tickers: &HashMap<String, (f64, f64, i64)>) -> (DiGraph<String, f64>, HashMap<String, NodeIndex>) {
-        let mut graph = DiGraph::<String, f64>::new();
-        let mut node_indices = HashMap::new();
-        let mut currencies = HashSet::new();
+       let mut graph = DiGraph::<String, f64>::new();
+       let mut node_indices = HashMap::new();
+       let mut currencies = HashSet::new();
 
-        for symbol in tickers.keys() {
-            if let Some((base, quote)) = Self::parse_symbol(symbol) {
-                currencies.insert(base);
-                currencies.insert(quote);
-            }
-        }
+    // First pass: collect all unique currencies
+       for symbol in tickers.keys() {
+           if let Some((base, quote)) = Self::parse_symbol(symbol) {
+               currencies.insert(base);
+               currencies.insert(quote);
+           }
+       }
 
-        for currency in currencies {
-            let idx = graph.add_node(currency.clone());
-            node_indices.insert(currency, idx);
-        }
+    // Add nodes for all currencies
+       for currency in currencies {
+           let idx = graph.add_node(currency.clone());
+           node_indices.insert(currency, idx);
+       }
 
-        for (symbol, (bid, ask, _)) in tickers {
-            if let Some((base, quote)) = Self::parse_symbol(symbol) {
-                if let (Some(&from_idx), Some(&to_idx)) = (node_indices.get(&base), node_indices.get(&quote)) {
-                    if *bid > 0.0 {
-                        let weight = -bid.ln();
-                        graph.add_edge(from_idx, to_idx, weight);
-                    }
-                    if *ask > 0.0 {
-                        let weight = -(1.0 / ask).ln();
-                        graph.add_edge(to_idx, from_idx, weight);
-                    }
-                }
-            }
-        }
+    // Second pass: add edges for each trading pair
+       for (symbol, (bid, ask, _)) in tickers {
+           if let Some((base, quote)) = Self::parse_symbol(symbol) {
+               if let (Some(&base_idx), Some(&quote_idx)) = (node_indices.get(&base), node_indices.get(&quote)) {
+                
+                // Add edge for base -> quote (using bid price - selling base for quote)
+                   if *bid > 0.0 {
+                       let weight = -bid.ln();
+                       graph.add_edge(base_idx, quote_idx, weight);
+                       println!("DEBUG: Added edge {} -> {} with weight {:.6} (from {})", base, quote, weight, symbol);
+                   }
+                
+                // Add edge for quote -> base (using ask price - buying base with quote)
+                   if *ask > 0.0 {
+                       let weight = -(1.0 / ask).ln();
+                       graph.add_edge(quote_idx, base_idx, weight);
+                       println!("DEBUG: Added edge {} -> {} with weight {:.6} (from {})", quote, base, weight, symbol);
+                   }
+               }
+           }
+       }
 
-        (graph, node_indices)
+       (graph, node_indices)
     }
 
     fn calculate_execution_chance(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
