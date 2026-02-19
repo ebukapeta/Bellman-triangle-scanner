@@ -95,8 +95,8 @@ impl BinanceWebSocketCollector {
            "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",    // More fiat
        ];
 
-    // Try each quote currency
-       for "q" in &quotes {
+    // Try each quote currency (NO QUOTES around q)
+       for q in &quotes {
            if s.ends_with(q) && s.len() > q.len() {
                let base = s[..s.len() - q.len()].to_string();
             // Make sure base isn't empty and is reasonable length
