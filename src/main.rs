@@ -838,11 +838,11 @@ impl ArbitrageDetector {
                                         timestamp: Utc::now().timestamp_millis(),
                                         exchange: "unknown".to_string(),
                                         estimated_slippage: profit * 0.1,
-                                    });
-                                 } else {
-                                    println!("  ❌ Invalid profit: {:.4}%", profit);
-                                 }
-                              }
+                                     });
+                                  } else {
+                                     println!("  ❌ Invalid profit: {:.4}%", profit);
+                                  }
+                               }
                            }
                            break;
                        }
