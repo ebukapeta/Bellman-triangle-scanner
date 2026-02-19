@@ -1055,7 +1055,48 @@ impl ArbitrageDetector {
         println!("🔨 Building currency graph for {}...", exchange);
         let (graph, node_indices) = self.build_graph(&tickers);
         println!("📈 Graph has {} nodes and {} edges", graph.node_count(), graph.edge_count());
-        self.debug_graph(&graph, &node_indices, &tickers); //    
+        self.debug_graph(&graph, &node_indices, &tickers); //  
+
+        // Add this right after you build the graph
+        println!("\n=== GRAPH STRUCTURE DEBUG ===");
+        println!("Total nodes: {}", graph.node_count());
+        println!("Total edges: {}", graph.edge_count());
+
+// Check if major currencies are connected
+        let major_currencies = ["BTC", "ETH", "BNB", "USDT", "USDC"];
+        for currency in &major_currencies {
+           if let Some(&node_idx) = node_indices.get(*currency) {
+              let mut connections = 0;
+              for edge in graph.edges_directed(node_idx, petgraph::Direction::Outgoing) {
+                 connections += 1;
+              }
+              println!("{} has {} outgoing edges", currency, connections);
+           } else {
+              println!("{} NOT FOUND in graph", currency);
+           }
+        }
+
+// Test a specific path: BTC -> USDT -> ETH -> BTC
+        if let (Some(&btc), Some(&usdt), Some(&eth)) = (
+           node_indices.get("BTC"),
+           node_indices.get("USDT"), 
+           node_indices.get("ETH")
+        ) {
+           let has_btc_usdt = graph.find_edge(btc, usdt).is_some();
+           let has_usdt_eth = graph.find_edge(usdt, eth).is_some();
+           let has_eth_btc = graph.find_edge(eth, btc).is_some();
+    
+           println!("\nBTC->USDT->ETH->BTC path:");
+           println!("  BTC->USDT edge: {}", has_btc_usdt);
+           println!("  USDT->ETH edge: {}", has_usdt_eth);
+           println!("  ETH->BTC edge: {}", has_eth_btc);
+    
+           if has_btc_usdt && has_usdt_eth && has_eth_btc {
+              println!("  ✅ Path exists!");
+           } else {
+              println!("  ❌ Path incomplete - missing edges");
+           }
+        }
     
         println!("🔎 Running Bellman-Ford to find arbitrage opportunities...");
         let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
