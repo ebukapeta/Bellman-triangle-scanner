@@ -86,38 +86,28 @@ impl BinanceWebSocketCollector {
     fn parse_symbol(symbol: &str) -> Option<(String, String)> {
        let s = symbol.to_uppercase();
     
-    // Common quote currencies (including major cryptocurrencies)
-       const QUOTES: [&str; 30] = [
-           "USDT", "BUSD", "USDC", "FDUSD", "TUSD", "DAI", 
-           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE",  // Added crypto bases as quotes
-           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", 
-           "RUB", "ZAR", "NGN", "UAH", "IDR", "JPY", "KRW", 
-           "VND", "MXN", "CHF"
+    // List of all possible quote currencies (including major cryptos)
+       let quotes = [
+           "USDT", "BUSD", "USDC", "FDUSD", "TUSD", "DAI", "USDD", "USD",  // Stablecoins
+           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", // Major cryptos
+           "MATIC", "AVAX", "UNI", "ATOM", "ALGO", "FIL", "VET", "THETA",   // More cryptos
+           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR",    // Fiat
+           "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",    // More fiat
        ];
 
-       for q in &QUOTES {
-           if s.ends_with(*q) && s.len() > q.len() {
+    // Try each quote currency
+       for "q" in &quotes {
+           if s.ends_with(q) && s.len() > q.len() {
                let base = s[..s.len() - q.len()].to_string();
-               if !base.is_empty() && base.len() >= 2 {
+            // Make sure base isn't empty and is reasonable length
+               if !base.is_empty() && base.len() >= 2 && base.len() <= 10 {
+                   println!("DEBUG: Parsed {} as {}/{}", symbol, base, q);
                    return Some((base, q.to_string()));
                }
            }
        }
-
-    // Fallback for unknown pairs
-       if s.len() > 6 {
-           let try3 = s.split_at(s.len() - 3);
-           if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
-               return Some((try3.0.to_string(), try3.1.to_string()));
-           }
-       }
-       if s.len() > 7 {
-           let try4 = s.split_at(s.len() - 4);
-           if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
-               return Some((try4.0.to_string(), try4.1.to_string()));
-           }
-       }
     
+       println!("DEBUG: Failed to parse {}", symbol);
        None
     }
 
