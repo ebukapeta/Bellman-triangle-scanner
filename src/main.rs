@@ -86,52 +86,89 @@ impl BinanceWebSocketCollector {
     fn parse_symbol(symbol: &str) -> Option<(String, String)> {
        let s = symbol.to_uppercase();
     
-    // Comprehensive list of quote currencies (ordered by length DESC to match longest first)
-       let quotes = [
-           "FDUSD", "USDT", "BUSD", "USDC", "DAI", "TUSD", "USDD", "USD",  // Stablecoins (4-5 chars)
-           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", // Major cryptos (3-4 chars)
-           "MATIC", "AVAX", "UNI", "ATOM", "ALGO", "FIL", "VET", "THETA",   // 4-5 chars
-           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR",    // Fiat (3 chars)
-           "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",    // More fiat (3 chars)
-       ];
-
-    // Try to match the LONGEST quote first (important for FDUSD vs USD)
-       for q in quotes.iter() {
-           if s.ends_with(*q) && s.len() > q.len() {
-               let base = s[..s.len() - q.len()].to_string();
-            
-            // Validate base currency (should be 2-10 characters, all uppercase)
-               if base.len() >= 2 && base.len() <= 10 && base.chars().all(|c| c.is_ascii_uppercase()) {
-                   println!("DEBUG: ✓ Parsed {} as {}/{}", symbol, base, q);
-                   return Some((base, q.to_string()));
-               } else {
-                   println!("DEBUG: ✗ Invalid base currency '{}' from {}", base, symbol);
-               }
+    // Direct mapping for common patterns - TRY THESE FIRST
+       if s.ends_with("BTC") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/BTC", symbol, base);
+               return Some((base, "BTC".to_string()));
            }
        }
-    
-    // If no match found, try a more aggressive fallback
-       if s.len() > 6 {
-        // Try last 3 chars as quote
-           let try3 = s.split_at(s.len() - 3);
-           if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
-               let base = try3.0.to_string();
-               let quote = try3.1.to_string();
-               if base.len() >= 2 && base.len() <= 10 {
-                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
-                   return Some((base, quote));
-               }
+       if s.ends_with("ETH") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/ETH", symbol, base);
+               return Some((base, "ETH".to_string()));
            }
-        
-        // Try last 4 chars as quote
-           let try4 = s.split_at(s.len() - 4);
-           if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
-               let base = try4.0.to_string();
-               let quote = try4.1.to_string();
-               if base.len() >= 2 && base.len() <= 10 {
-                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
-                   return Some((base, quote));
-               }
+       }
+       if s.ends_with("BNB") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/BNB", symbol, base);
+               return Some((base, "BNB".to_string()));
+           }
+       }
+       if s.ends_with("SOL") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/SOL", symbol, base);
+               return Some((base, "SOL".to_string()));
+           }
+       }
+       if s.ends_with("USDT") && s.len() > 4 {
+           let base = s[..s.len()-4].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/USDT", symbol, base);
+               return Some((base, "USDT".to_string()));
+           }
+       }
+       if s.ends_with("USDC") && s.len() > 4 {
+           let base = s[..s.len()-4].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/USDC", symbol, base);
+               return Some((base, "USDC".to_string()));
+           }
+       }
+       if s.ends_with("BUSD") && s.len() > 4 {
+           let base = s[..s.len()-4].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/BUSD", symbol, base);
+               return Some((base, "BUSD".to_string()));
+           }
+       }
+       if s.ends_with("FDUSD") && s.len() > 5 {
+           let base = s[..s.len()-5].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/FDUSD", symbol, base);
+               return Some((base, "FDUSD".to_string()));
+           }
+       }
+       if s.ends_with("TRY") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/TRY", symbol, base);
+               return Some((base, "TRY".to_string()));
+           }
+       }
+       if s.ends_with("EUR") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/EUR", symbol, base);
+               return Some((base, "EUR".to_string()));
+           }
+       }
+       if s.ends_with("GBP") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/GBP", symbol, base);
+               return Some((base, "GBP".to_string()));
+           }
+       }
+       if s.ends_with("JPY") && s.len() > 3 {
+           let base = s[..s.len()-3].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/JPY", symbol, base);
+               return Some((base, "JPY".to_string()));
            }
        }
     
