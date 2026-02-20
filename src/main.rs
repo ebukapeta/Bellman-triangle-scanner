@@ -86,28 +86,56 @@ impl BinanceWebSocketCollector {
     fn parse_symbol(symbol: &str) -> Option<(String, String)> {
        let s = symbol.to_uppercase();
     
-    // List of all possible quote currencies (including major cryptos)
+    // Comprehensive list of quote currencies (ordered by length DESC to match longest first)
        let quotes = [
-           "USDT", "BUSD", "USDC", "FDUSD", "TUSD", "DAI", "USDD", "USD",  // Stablecoins
-           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", // Major cryptos
-           "MATIC", "AVAX", "UNI", "ATOM", "ALGO", "FIL", "VET", "THETA",   // More cryptos
-           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR",    // Fiat
-           "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",    // More fiat
+           "FDUSD", "USDT", "BUSD", "USDC", "DAI", "TUSD", "USDD", "USD",  // Stablecoins (4-5 chars)
+           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", // Major cryptos (3-4 chars)
+           "MATIC", "AVAX", "UNI", "ATOM", "ALGO", "FIL", "VET", "THETA",   // 4-5 chars
+           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR",    // Fiat (3 chars)
+           "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",    // More fiat (3 chars)
        ];
 
-    // Try each quote currency (NO QUOTES around q)
-       for q in &quotes {
-           if s.ends_with(q) && s.len() > q.len() {
+    // Try to match the LONGEST quote first (important for FDUSD vs USD)
+       for q in quotes.iter() {
+           if s.ends_with(*q) && s.len() > q.len() {
                let base = s[..s.len() - q.len()].to_string();
-            // Make sure base isn't empty and is reasonable length
-               if !base.is_empty() && base.len() >= 2 && base.len() <= 10 {
-                   println!("DEBUG: Parsed {} as {}/{}", symbol, base, q);
+            
+            // Validate base currency (should be 2-10 characters, all uppercase)
+               if base.len() >= 2 && base.len() <= 10 && base.chars().all(|c| c.is_ascii_uppercase()) {
+                   println!("DEBUG: ✓ Parsed {} as {}/{}", symbol, base, q);
                    return Some((base, q.to_string()));
+               } else {
+                   println!("DEBUG: ✗ Invalid base currency '{}' from {}", base, symbol);
                }
            }
        }
     
-       println!("DEBUG: Failed to parse {}", symbol);
+    // If no match found, try a more aggressive fallback
+       if s.len() > 6 {
+        // Try last 3 chars as quote
+           let try3 = s.split_at(s.len() - 3);
+           if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
+               let base = try3.0.to_string();
+               let quote = try3.1.to_string();
+               if base.len() >= 2 && base.len() <= 10 {
+                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
+                   return Some((base, quote));
+               }
+           }
+        
+        // Try last 4 chars as quote
+           let try4 = s.split_at(s.len() - 4);
+           if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
+               let base = try4.0.to_string();
+               let quote = try4.1.to_string();
+               if base.len() >= 2 && base.len() <= 10 {
+                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
+                   return Some((base, quote));
+               }
+           }
+       }
+    
+       println!("DEBUG: ✗ Failed to parse {}", symbol);
        None
     }
 
