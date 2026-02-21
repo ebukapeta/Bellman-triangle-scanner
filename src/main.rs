@@ -331,6 +331,7 @@ impl BybitCollector {
             Ok((ws_stream, _)) => {
                 let (mut write, mut read) = ws_stream.split();
                 
+                // Bybit subscription format
                 let subscribe_msg = serde_json::json!({
                     "op": "subscribe",
                     "args": ["tickers"]
@@ -356,20 +357,19 @@ impl BybitCollector {
 
                     match msg {
                         Ok(Message::Text(text)) => {
+                            // Bybit sends tickers in "data" field of type
                             if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if ticker_data["topic"].as_str() == Some("tickers") {
-                                    if let Some(data) = ticker_data["data"].as_object() {
-                                        if let (Some(symbol), Some(bid), Some(ask)) = (
-                                            data.get("symbol").and_then(|s| s.as_str()),
-                                            data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                            data.get("ask1Price").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                        ) {
-                                            // Accept ALL pairs that can be parsed
-                                            if parse_symbol(symbol).is_some() {
-                                                let mut data_map = data_clone.lock().await;
-                                                data_map.insert(symbol.to_string(), (bid, ask, Utc::now().timestamp_millis()));
-                                                pair_count += 1;
-                                            }
+                                // Bybit tickers come as individual messages, not arrays
+                                if let Some(data) = ticker_data.get("data") {
+                                    if let (Some(symbol), Some(bid), Some(ask)) = (
+                                        data.get("symbol").and_then(|s| s.as_str()),
+                                        data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                        data.get("ask1Price").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                    ) {
+                                        if parse_symbol(symbol).is_some() {
+                                            let mut data_map = data_clone.lock().await;
+                                            data_map.insert(symbol.to_string(), (bid, ask, Utc::now().timestamp_millis()));
+                                            pair_count += 1;
                                         }
                                     }
                                 }
@@ -388,15 +388,6 @@ impl BybitCollector {
                             break;
                         }
                         _ => {}
-                    }
-
-                    if pair_count > 0 && pair_count % 500 == 0 {
-                        logs_clone.lock().await.push(ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "bybit".to_string(),
-                            message: format!("Collected {} pairs", pair_count),
-                            level: "debug".to_string(),
-                        });
                     }
                 }
 
@@ -441,6 +432,7 @@ impl BybitCollector {
 }
 
 // ==================== KuCoin WebSocket Collector ====================
+
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -475,6 +467,7 @@ impl KuCoinCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
+        // Get WebSocket token
         let client = reqwest::Client::new();
         let token_url = "https://api.kucoin.com/api/v1/bullet-public";
         
@@ -491,6 +484,7 @@ impl KuCoinCollector {
                             Ok((ws_stream, _)) => {
                                 let (mut write, mut read) = ws_stream.split();
                                 
+                                // KuCoin subscription format
                                 let subscribe_msg = serde_json::json!({
                                     "id": 1,
                                     "type": "subscribe",
@@ -520,6 +514,7 @@ impl KuCoinCollector {
                                     match msg {
                                         Ok(Message::Text(text)) => {
                                             if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                                // KuCoin sends tickers in "data" field of "message" type
                                                 if ticker_data["type"].as_str() == Some("message") {
                                                     if let Some(data) = ticker_data["data"].as_object() {
                                                         if let (Some(symbol), Some(bestBid), Some(bestAsk)) = (
@@ -527,7 +522,6 @@ impl KuCoinCollector {
                                                             data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                             data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                         ) {
-                                                            // Accept ALL pairs that can be parsed
                                                             if parse_symbol(symbol).is_some() {
                                                                 let mut data_map = data_clone.lock().await;
                                                                 data_map.insert(symbol.to_string(), (bestBid, bestAsk, Utc::now().timestamp_millis()));
@@ -551,15 +545,6 @@ impl KuCoinCollector {
                                             break;
                                         }
                                         _ => {}
-                                    }
-
-                                    if pair_count > 0 && pair_count % 500 == 0 {
-                                        logs_clone.lock().await.push(ScanLog {
-                                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                            exchange: "kucoin".to_string(),
-                                            message: format!("Collected {} pairs", pair_count),
-                                            level: "debug".to_string(),
-                                        });
                                     }
                                 }
 
@@ -613,7 +598,7 @@ impl KuCoinCollector {
     pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
         self.logs.clone()
     }
-}
+ }
 
 // ==================== Arbitrage Detector ====================
 
