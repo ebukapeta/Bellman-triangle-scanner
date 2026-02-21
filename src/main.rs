@@ -214,14 +214,25 @@ impl BinanceWebSocketCollector {
                 let mut last_log_time = Instant::now();
 
                 while let Some(msg) = ws_stream.next().await {
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-
-                    match msg {
-                        Ok(m) if m.is_text() => {
-                            if let Ok(txt) = m.into_text() {
-                                match serde_json::from_str::<serde_json::Value>(&txt) {
+                   if Instant::now() >= deadline {
+                      break;
+                   }
+    
+                   match msg {
+                      Ok(m) if m.is_text() => {
+                         if let Ok(txt) = m.into_text() {
+                // === ADD DEBUG HERE ===
+                // Print first 20 raw messages to see actual data
+                            use std::sync::atomic::{AtomicUsize, Ordering};
+                            static COUNT: AtomicUsize = AtomicUsize::new(0);
+                            let count = COUNT.fetch_add(1, Ordering::SeqCst);
+                            if count < 20 {
+                               println!("🔍 RAW BINANCE MESSAGE {}: {}", count, txt);
+                            }
+                // === END DEBUG ===
+                
+                            match serde_json::from_str::<serde_json::Value>(&txt) {
+                    // ... rest of your code
                                     Ok(serde_json::Value::Array(arr)) => {
                                         for item in arr {
                                             let symbol = item.get("s").and_then(|v| v.as_str());
