@@ -50,7 +50,8 @@ pub struct ScanLog {
 pub struct ScanSummary {
     pub exchange: String,
     pub pairs_collected: usize,
-    pub paths_found: usize,
+    pub paths_checked: usize,
+    pub valid_triangles: usize,
     pub profitable_triangles: usize,
     pub collection_time_secs: u64,
 }
@@ -62,13 +63,76 @@ pub struct ScanResponse {
     pub logs: Vec<ScanLog>,
 }
 
-// ==================== WebSocket Collectors ====================
-pub struct BinanceWebSocketCollector {
+// ==================== Symbol Parser ====================
+
+fn parse_symbol(symbol: &str) -> Option<(String, String)> {
+    let s = symbol.to_uppercase();
+    
+    // Handle special cases
+    if s.ends_with("USD1") && s.len() > 4 {
+        let base = s[..s.len()-4].to_string();
+        if base.len() >= 2 {
+            return Some((base, "USD".to_string()));
+        }
+    }
+    
+    if s.ends_with("RLUSD") && s.len() > 5 {
+        let base = s[..s.len()-5].to_string();
+        if base.len() >= 2 {
+            return Some((base, "USD".to_string()));
+        }
+    }
+    
+    // Standard quote currencies (longest first)
+    let quotes = [
+        "FDUSD", "USDT", "BUSD", "USDC", "DAI", "TUSD", "USD",
+        "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK",
+        "MATIC", "AVAX", "UNI", "ATOM", "ALGO", "FIL", "VET", "THETA",
+        "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR",
+        "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",
+    ];
+
+    for q in quotes.iter() {
+        if s.ends_with(*q) && s.len() > q.len() {
+            let base = s[..s.len() - q.len()].to_string();
+            if base.len() >= 2 && base.len() <= 10 && base.chars().all(|c| c.is_ascii_uppercase()) {
+                return Some((base, q.to_string()));
+            }
+        }
+    }
+    
+    // Fallback parsing
+    if s.len() > 6 {
+        let try4 = s.split_at(s.len() - 4);
+        if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
+            let base = try4.0.to_string();
+            let quote = try4.1.to_string();
+            if base.len() >= 2 && base.len() <= 10 {
+                return Some((base, quote));
+            }
+        }
+        
+        let try3 = s.split_at(s.len() - 3);
+        if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
+            let base = try3.0.to_string();
+            let quote = try3.1.to_string();
+            if base.len() >= 2 && base.len() <= 10 {
+                return Some((base, quote));
+            }
+        }
+    }
+    
+    None
+}
+
+// ==================== Binance WebSocket Collector ====================
+
+pub struct BinanceCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
 }
 
-impl BinanceWebSocketCollector {
+impl BinanceCollector {
     pub fn new() -> Self {
         Self {
             collected_data: Arc::new(Mutex::new(HashMap::new())),
@@ -83,104 +147,10 @@ impl BinanceWebSocketCollector {
         })
     }
 
-    fn parse_symbol(symbol: &str) -> Option<(String, String)> {
-       let s = symbol.to_uppercase();
-    
-    // Direct mapping for common patterns - TRY THESE FIRST
-       if s.ends_with("BTC") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/BTC", symbol, base);
-               return Some((base, "BTC".to_string()));
-           }
-       }
-       if s.ends_with("ETH") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/ETH", symbol, base);
-               return Some((base, "ETH".to_string()));
-           }
-       }
-       if s.ends_with("BNB") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/BNB", symbol, base);
-               return Some((base, "BNB".to_string()));
-           }
-       }
-       if s.ends_with("SOL") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/SOL", symbol, base);
-               return Some((base, "SOL".to_string()));
-           }
-       }
-       if s.ends_with("USDT") && s.len() > 4 {
-           let base = s[..s.len()-4].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/USDT", symbol, base);
-               return Some((base, "USDT".to_string()));
-           }
-       }
-       if s.ends_with("USDC") && s.len() > 4 {
-           let base = s[..s.len()-4].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/USDC", symbol, base);
-               return Some((base, "USDC".to_string()));
-           }
-       }
-       if s.ends_with("BUSD") && s.len() > 4 {
-           let base = s[..s.len()-4].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/BUSD", symbol, base);
-               return Some((base, "BUSD".to_string()));
-           }
-       }
-       if s.ends_with("FDUSD") && s.len() > 5 {
-           let base = s[..s.len()-5].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/FDUSD", symbol, base);
-               return Some((base, "FDUSD".to_string()));
-           }
-       }
-       if s.ends_with("TRY") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/TRY", symbol, base);
-               return Some((base, "TRY".to_string()));
-           }
-       }
-       if s.ends_with("EUR") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/EUR", symbol, base);
-               return Some((base, "EUR".to_string()));
-           }
-       }
-       if s.ends_with("GBP") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/GBP", symbol, base);
-               return Some((base, "GBP".to_string()));
-           }
-       }
-       if s.ends_with("JPY") && s.len() > 3 {
-           let base = s[..s.len()-3].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/JPY", symbol, base);
-               return Some((base, "JPY".to_string()));
-           }
-       }
-    
-       println!("DEBUG: ✗ Failed to parse {}", symbol);
-       None
-    }
-
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
-        let deadline = Instant::now() + Duration::from_secs(duration_secs);
+        let deadline = start_time + Duration::from_secs(duration_secs);
         
-        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -190,7 +160,7 @@ impl BinanceWebSocketCollector {
         logs.push(ScanLog {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             exchange: "binance".to_string(),
-            message: format!("Starting Binance WebSocket collection for {} seconds", duration_secs),
+            message: format!("Starting Binance collection ({}s)", duration_secs),
             level: "info".to_string(),
         });
         drop(logs);
@@ -198,7 +168,6 @@ impl BinanceWebSocketCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        // Connect to WebSocket
         let ws_url = "wss://stream.binance.com:9443/ws/!ticker@arr";
         
         match connect_async(ws_url).await {
@@ -206,74 +175,56 @@ impl BinanceWebSocketCollector {
                 logs_clone.lock().await.push(ScanLog {
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     exchange: "binance".to_string(),
-                    message: "Binance WebSocket connected".to_string(),
+                    message: "WebSocket connected".to_string(),
                     level: "success".to_string(),
                 });
 
                 let mut pair_count = 0;
-                let mut last_log_time = Instant::now();
 
                 while let Some(msg) = ws_stream.next().await {
-                   if Instant::now() >= deadline {
-                      break;
-                   }
-    
-                   match msg {
-                      Ok(m) if m.is_text() => {
-                         if let Ok(txt) = m.into_text() {
-                // === ADD DEBUG HERE ===
-                // Print first 20 raw messages to see actual data
-                            use std::sync::atomic::{AtomicUsize, Ordering};
-                            static COUNT: AtomicUsize = AtomicUsize::new(0);
-                            let count = COUNT.fetch_add(1, Ordering::SeqCst);
-                            if count < 20 {
-                               println!("🔍 RAW BINANCE MESSAGE {}: {}", count, txt);
-                            }
-                // === END DEBUG ===
-                
-                            match serde_json::from_str::<serde_json::Value>(&txt) {
-                    // ... rest of your code
-                                    Ok(serde_json::Value::Array(arr)) => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                match ticker_data {
+                                    serde_json::Value::Array(arr) => {
                                         for item in arr {
                                             let symbol = item.get("s").and_then(|v| v.as_str());
                                             let bid = Self::parse_f64(item.get("b"));
                                             let ask = Self::parse_f64(item.get("a"));
                                             
                                             if let (Some(sym), Some(bid_price), Some(ask_price)) = (symbol, bid, ask) {
-                                                if let Some((_base, _quote)) = Self::parse_symbol(sym) {
+                                                if parse_symbol(sym).is_some() {
                                                     let mut data = data_clone.lock().await;
-                                                    data.insert(sym.to_string(), (bid_price, ask_price, chrono::Utc::now().timestamp_millis()));
+                                                    data.insert(sym.to_string(), (bid_price, ask_price, Utc::now().timestamp_millis()));
                                                     pair_count += 1;
                                                 }
                                             }
                                         }
                                     }
-                                    Ok(serde_json::Value::Object(obj)) => {
-                                        // Single ticker object
+                                    serde_json::Value::Object(obj) => {
                                         let symbol = obj.get("s").and_then(|v| v.as_str());
                                         let bid = Self::parse_f64(obj.get("b"));
                                         let ask = Self::parse_f64(obj.get("a"));
                                         
                                         if let (Some(sym), Some(bid_price), Some(ask_price)) = (symbol, bid, ask) {
-                                            if let Some((_base, _quote)) = Self::parse_symbol(sym) {
+                                            if parse_symbol(sym).is_some() {
                                                 let mut data = data_clone.lock().await;
-                                                data.insert(sym.to_string(), (bid_price, ask_price, chrono::Utc::now().timestamp_millis()));
+                                                data.insert(sym.to_string(), (bid_price, ask_price, Utc::now().timestamp_millis()));
                                                 pair_count += 1;
                                             }
                                         }
                                     }
-                                    _ => {
-                                        logs_clone.lock().await.push(ScanLog {
-                                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                            exchange: "binance".to_string(),
-                                            message: "Received non-object/array message".to_string(),
-                                            level: "debug".to_string(),
-                                        });
-                                    }
+                                    _ => {}
                                 }
                             }
                         }
-                        Ok(_) => {} // Ignore other message types
+                        Ok(Message::Ping(_)) => {}
+                        Ok(Message::Pong(_)) => {}
+                        Ok(Message::Close(_)) => break,
                         Err(e) => {
                             logs_clone.lock().await.push(ScanLog {
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -283,27 +234,25 @@ impl BinanceWebSocketCollector {
                             });
                             break;
                         }
+                        _ => {}
                     }
 
-                    // Progress logging
-                    if pair_count > 0 && (pair_count % 100 == 0 || last_log_time.elapsed() > Duration::from_secs(2)) {
+                    if pair_count > 0 && pair_count % 500 == 0 {
                         logs_clone.lock().await.push(ScanLog {
                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                             exchange: "binance".to_string(),
-                            message: format!("Collected {} unique pairs...", pair_count),
+                            message: format!("Collected {} pairs", pair_count),
                             level: "debug".to_string(),
                         });
-                        last_log_time = Instant::now();
                     }
 
-                    // Small delay to prevent CPU overload
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
 
                 logs_clone.lock().await.push(ScanLog {
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     exchange: "binance".to_string(),
-                    message: format!("Collection complete. Total unique pairs: {}", pair_count),
+                    message: format!("Collection complete: {} pairs", pair_count),
                     level: "success".to_string(),
                 });
             }
@@ -324,7 +273,8 @@ impl BinanceWebSocketCollector {
         ScanSummary {
             exchange: "binance".to_string(),
             pairs_collected,
-            paths_found: 0,
+            paths_checked: 0,
+            valid_triangles: 0,
             profitable_triangles: 0,
             collection_time_secs: start_time.elapsed().as_secs(),
         }
@@ -337,14 +287,16 @@ impl BinanceWebSocketCollector {
     pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
         self.logs.clone()
     }
-}                                    
+}
 
-pub struct BybitWebSocketCollector {
+// ==================== Bybit WebSocket Collector ====================
+
+pub struct BybitCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
 }
 
-impl BybitWebSocketCollector {
+impl BybitCollector {
     pub fn new() -> Self {
         Self {
             collected_data: Arc::new(Mutex::new(HashMap::new())),
@@ -354,9 +306,8 @@ impl BybitWebSocketCollector {
 
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
-        let end_time = start_time + Duration::from_secs(duration_secs);
+        let deadline = start_time + Duration::from_secs(duration_secs);
         
-        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -366,7 +317,7 @@ impl BybitWebSocketCollector {
         logs.push(ScanLog {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             exchange: "bybit".to_string(),
-            message: format!("Starting Bybit WebSocket collection for {} seconds", duration_secs),
+            message: format!("Starting Bybit collection ({}s)", duration_secs),
             level: "info".to_string(),
         });
         drop(logs);
@@ -374,14 +325,12 @@ impl BybitWebSocketCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        // Connect to WebSocket
         let ws_url = "wss://stream.bybit.com/v5/public/spot";
         
         match connect_async(ws_url).await {
             Ok((ws_stream, _)) => {
                 let (mut write, mut read) = ws_stream.split();
                 
-                // Subscribe to tickers
                 let subscribe_msg = serde_json::json!({
                     "op": "subscribe",
                     "args": ["tickers"]
@@ -394,16 +343,19 @@ impl BybitWebSocketCollector {
                 logs_clone.lock().await.push(ScanLog {
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     exchange: "bybit".to_string(),
-                    message: "Bybit WebSocket connected and subscribed".to_string(),
+                    message: "WebSocket connected".to_string(),
                     level: "success".to_string(),
                 });
 
                 let mut pair_count = 0;
 
-                // Collect data until end_time
-                while Instant::now() < end_time {
-                    match tokio::time::timeout(Duration::from_millis(100), read.next()).await {
-                        Ok(Some(Ok(Message::Text(text)))) => {
+                while let Some(msg) = read.next().await {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+
+                    match msg {
+                        Ok(Message::Text(text)) => {
                             if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if ticker_data["topic"].as_str() == Some("tickers") {
                                     if let Some(data) = ticker_data["data"].as_object() {
@@ -412,29 +364,20 @@ impl BybitWebSocketCollector {
                                             data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                             data.get("ask1Price").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                         ) {
-                                            if symbol.ends_with("USDT") {
+                                            if parse_symbol(symbol).is_some() {
                                                 let mut data_map = data_clone.lock().await;
-                                                data_map.insert(symbol.to_string(), (bid, ask, chrono::Utc::now().timestamp_millis()));
+                                                data_map.insert(symbol.to_string(), (bid, ask, Utc::now().timestamp_millis()));
                                                 pair_count += 1;
-                                                
-                                                if pair_count % 50 == 0 {
-                                                    logs_clone.lock().await.push(ScanLog {
-                                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                        exchange: "bybit".to_string(),
-                                                        message: format!("Collected {} pairs...", pair_count),
-                                                        level: "debug".to_string(),
-                                                    });
-                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        Ok(Some(Ok(Message::Ping(data)))) => {
+                        Ok(Message::Ping(data)) => {
                             let _ = write.send(Message::Pong(data)).await;
                         }
-                        Ok(Some(Err(e))) => {
+                        Err(e) => {
                             logs_clone.lock().await.push(ScanLog {
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                                 exchange: "bybit".to_string(),
@@ -443,14 +386,23 @@ impl BybitWebSocketCollector {
                             });
                             break;
                         }
-                        _ => {} // Timeout or other messages - continue
+                        _ => {}
+                    }
+
+                    if pair_count > 0 && pair_count % 500 == 0 {
+                        logs_clone.lock().await.push(ScanLog {
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            exchange: "bybit".to_string(),
+                            message: format!("Collected {} pairs", pair_count),
+                            level: "debug".to_string(),
+                        });
                     }
                 }
 
                 logs_clone.lock().await.push(ScanLog {
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     exchange: "bybit".to_string(),
-                    message: format!("Collection complete. Total pairs: {}", pair_count),
+                    message: format!("Collection complete: {} pairs", pair_count),
                     level: "success".to_string(),
                 });
             }
@@ -471,7 +423,8 @@ impl BybitWebSocketCollector {
         ScanSummary {
             exchange: "bybit".to_string(),
             pairs_collected,
-            paths_found: 0,
+            paths_checked: 0,
+            valid_triangles: 0,
             profitable_triangles: 0,
             collection_time_secs: start_time.elapsed().as_secs(),
         }
@@ -486,12 +439,14 @@ impl BybitWebSocketCollector {
     }
 }
 
-pub struct KuCoinWebSocketCollector {
+// ==================== KuCoin WebSocket Collector ====================
+
+pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
 }
 
-impl KuCoinWebSocketCollector {
+impl KuCoinCollector {
     pub fn new() -> Self {
         Self {
             collected_data: Arc::new(Mutex::new(HashMap::new())),
@@ -501,9 +456,8 @@ impl KuCoinWebSocketCollector {
 
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
-        let end_time = start_time + Duration::from_secs(duration_secs);
+        let deadline = start_time + Duration::from_secs(duration_secs);
         
-        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -513,7 +467,7 @@ impl KuCoinWebSocketCollector {
         logs.push(ScanLog {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             exchange: "kucoin".to_string(),
-            message: format!("Starting KuCoin WebSocket collection for {} seconds", duration_secs),
+            message: format!("Starting KuCoin collection ({}s)", duration_secs),
             level: "info".to_string(),
         });
         drop(logs);
@@ -521,7 +475,6 @@ impl KuCoinWebSocketCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        // First get WebSocket token from KuCoin REST API
         let client = reqwest::Client::new();
         let token_url = "https://api.kucoin.com/api/v1/bullet-public";
         
@@ -538,7 +491,6 @@ impl KuCoinWebSocketCollector {
                             Ok((ws_stream, _)) => {
                                 let (mut write, mut read) = ws_stream.split();
                                 
-                                // Subscribe to all tickers
                                 let subscribe_msg = serde_json::json!({
                                     "id": 1,
                                     "type": "subscribe",
@@ -554,16 +506,19 @@ impl KuCoinWebSocketCollector {
                                 logs_clone.lock().await.push(ScanLog {
                                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                                     exchange: "kucoin".to_string(),
-                                    message: "KuCoin WebSocket connected and subscribed".to_string(),
+                                    message: "WebSocket connected".to_string(),
                                     level: "success".to_string(),
                                 });
 
                                 let mut pair_count = 0;
 
-                                // Collect data until end_time
-                                while Instant::now() < end_time {
-                                    match tokio::time::timeout(Duration::from_millis(100), read.next()).await {
-                                        Ok(Some(Ok(Message::Text(text)))) => {
+                                while let Some(msg) = read.next().await {
+                                    if Instant::now() >= deadline {
+                                        break;
+                                    }
+
+                                    match msg {
+                                        Ok(Message::Text(text)) => {
                                             if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
                                                 if ticker_data["type"].as_str() == Some("message") {
                                                     if let Some(data) = ticker_data["data"].as_object() {
@@ -572,29 +527,20 @@ impl KuCoinWebSocketCollector {
                                                             data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                             data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                         ) {
-                                                            if symbol.ends_with("USDT") {
+                                                            if parse_symbol(symbol).is_some() {
                                                                 let mut data_map = data_clone.lock().await;
-                                                                data_map.insert(symbol.to_string(), (bestBid, bestAsk, chrono::Utc::now().timestamp_millis()));
+                                                                data_map.insert(symbol.to_string(), (bestBid, bestAsk, Utc::now().timestamp_millis()));
                                                                 pair_count += 1;
-                                                                
-                                                                if pair_count % 50 == 0 {
-                                                                    logs_clone.lock().await.push(ScanLog {
-                                                                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                                        exchange: "kucoin".to_string(),
-                                                                        message: format!("Collected {} pairs...", pair_count),
-                                                                        level: "debug".to_string(),
-                                                                    });
-                                                                }
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                        Ok(Some(Ok(Message::Ping(data)))) => {
+                                        Ok(Message::Ping(data)) => {
                                             let _ = write.send(Message::Pong(data)).await;
                                         }
-                                        Ok(Some(Err(e))) => {
+                                        Err(e) => {
                                             logs_clone.lock().await.push(ScanLog {
                                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                                                 exchange: "kucoin".to_string(),
@@ -603,14 +549,23 @@ impl KuCoinWebSocketCollector {
                                             });
                                             break;
                                         }
-                                        _ => {} // Timeout or other messages - continue
+                                        _ => {}
+                                    }
+
+                                    if pair_count > 0 && pair_count % 500 == 0 {
+                                        logs_clone.lock().await.push(ScanLog {
+                                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                            exchange: "kucoin".to_string(),
+                                            message: format!("Collected {} pairs", pair_count),
+                                            level: "debug".to_string(),
+                                        });
                                     }
                                 }
 
                                 logs_clone.lock().await.push(ScanLog {
                                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                                     exchange: "kucoin".to_string(),
-                                    message: format!("Collection complete. Total pairs: {}", pair_count),
+                                    message: format!("Collection complete: {} pairs", pair_count),
                                     level: "success".to_string(),
                                 });
                             }
@@ -623,21 +578,7 @@ impl KuCoinWebSocketCollector {
                                 });
                             }
                         }
-                    } else {
-                        logs_clone.lock().await.push(ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "kucoin".to_string(),
-                            message: "Failed to parse WebSocket token".to_string(),
-                            level: "error".to_string(),
-                        });
                     }
-                } else {
-                    logs_clone.lock().await.push(ScanLog {
-                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                        exchange: "kucoin".to_string(),
-                        message: "Failed to parse token response".to_string(),
-                        level: "error".to_string(),
-                    });
                 }
             }
             Err(e) => {
@@ -657,7 +598,8 @@ impl KuCoinWebSocketCollector {
         ScanSummary {
             exchange: "kucoin".to_string(),
             pairs_collected,
-            paths_found: 0,
+            paths_checked: 0,
+            valid_triangles: 0,
             profitable_triangles: 0,
             collection_time_secs: start_time.elapsed().as_secs(),
         }
@@ -675,369 +617,92 @@ impl KuCoinWebSocketCollector {
 // ==================== Arbitrage Detector ====================
 
 pub struct ArbitrageDetector {
-    binance_collector: BinanceWebSocketCollector,
-    bybit_collector: BybitWebSocketCollector,
-    kucoin_collector: KuCoinWebSocketCollector,
+    binance_collector: BinanceCollector,
+    bybit_collector: BybitCollector,
+    kucoin_collector: KuCoinCollector,
 }
 
 impl ArbitrageDetector {
     pub fn new() -> Self {
         Self {
-            binance_collector: BinanceWebSocketCollector::new(),
-            bybit_collector: BybitWebSocketCollector::new(),
-            kucoin_collector: KuCoinWebSocketCollector::new(),
+            binance_collector: BinanceCollector::new(),
+            bybit_collector: BybitCollector::new(),
+            kucoin_collector: KuCoinCollector::new(),
         }
-    }
-
-    fn parse_symbol(symbol: &str) -> Option<(String, String)> {
-       let s = symbol.to_uppercase();
-    
-    // Handle special cases first
-       if s == "BTCUSD1" || s == "ETHUSD1" || s == "BNBUSD1" || s == "SOLUSD1" || s == "XRPUSD1" {
-        // These are actually BTC/USD, etc. - strip the "1"
-           let base = s[..s.len()-4].to_string();
-           println!("DEBUG: ✓ Special case parsed {} as {}/USD", symbol, base);
-           return Some((base, "USD".to_string()));
-       }
-    
-       if s.ends_with("USD1") && s.len() > 4 {
-           let base = s[..s.len()-4].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/USD", symbol, base);
-               return Some((base, "USD".to_string()));
-           }
-       }
-    
-       if s.ends_with("RLUSD") && s.len() > 5 {
-        // Handle RLUSD (RippleLabs USD) - treat as USD
-           let base = s[..s.len()-5].to_string();
-           if base.len() >= 2 {
-               println!("DEBUG: ✓ Parsed {} as {}/USD", symbol, base);
-               return Some((base, "USD".to_string()));
-           }
-       }
-    
-    // Standard quote currencies in order of length (longest first)
-       let quotes = [
-           "FDUSD", "USDT", "BUSD", "USDC", "DAI", "TUSD", "USD",  // USD variants
-           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK",  // Major cryptos
-           "MATIC", "AVAX", "UNI", "ATOM", "ALGO", "FIL", "VET", "THETA",  // More cryptos
-           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR",  // Fiat
-           "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",  // More fiat
-       ];
-
-    // Try to match each quote
-       for q in quotes.iter() {
-           if s.ends_with(*q) && s.len() > q.len() {
-               let base = s[..s.len() - q.len()].to_string();
-            
-            // Validate base currency
-               if base.len() >= 2 && base.len() <= 10 && base.chars().all(|c| c.is_ascii_uppercase()) {
-                   println!("DEBUG: ✓ Parsed {} as {}/{}", symbol, base, q);
-                   return Some((base, q.to_string()));
-               }
-           }
-       }
-    
-    // If no match found, try to extract last 3-4 chars as quote
-       if s.len() > 6 {
-        // Try last 4 chars
-           let try4 = s.split_at(s.len() - 4);
-           if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
-               let base = try4.0.to_string();
-               let quote = try4.1.to_string();
-               if base.len() >= 2 && base.len() <= 10 {
-                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
-                   return Some((base, quote));
-               }
-           }
-        
-        // Try last 3 chars
-           let try3 = s.split_at(s.len() - 3);
-           if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
-               let base = try3.0.to_string();
-               let quote = try3.1.to_string();
-               if base.len() >= 2 && base.len() <= 10 {
-                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
-                   return Some((base, quote));
-               }
-           }
-       }
-    
-       println!("DEBUG: ✗ Failed to parse {}", symbol);
-       None
     }
 
     fn build_graph(&self, tickers: &HashMap<String, (f64, f64, i64)>) -> (DiGraph<String, f64>, HashMap<String, NodeIndex>) {
-       let mut graph = DiGraph::<String, f64>::new();
-       let mut node_indices = HashMap::new();
-       let mut currencies = HashSet::new();
+        let mut graph = DiGraph::<String, f64>::new();
+        let mut node_indices = HashMap::new();
+        let mut currencies = HashSet::new();
 
-    // First pass: collect all unique currencies
-       for symbol in tickers.keys() {
-           if let Some((base, quote)) = Self::parse_symbol(symbol) {
-               currencies.insert(base);
-               currencies.insert(quote);
-           }
-       }
+        for symbol in tickers.keys() {
+            if let Some((base, quote)) = parse_symbol(symbol) {
+                currencies.insert(base);
+                currencies.insert(quote);
+            }
+        }
 
-    // Add nodes for all currencies
-       for currency in currencies {
-           let idx = graph.add_node(currency.clone());
-           node_indices.insert(currency, idx);
-       }
+        for currency in currencies {
+            let idx = graph.add_node(currency.clone());
+            node_indices.insert(currency, idx);
+        }
 
-    // Second pass: add edges for each trading pair
-       for (symbol, (bid, ask, _)) in tickers {
-    // DEBUG: Show all symbols before parsing
-          println!("DEBUG: Processing symbol: {}", symbol);
-    
-          if let Some((base, quote)) = Self::parse_symbol(symbol) {
-             println!("DEBUG: Successfully parsed {} as {}/{}", symbol, base, quote);
-        
-             if let (Some(&base_idx), Some(&quote_idx)) = (node_indices.get(&base), node_indices.get(&quote)) {
-            // Add edges...
-                if *bid > 0.0 {
-                   let weight = -bid.ln();
-                   graph.add_edge(base_idx, quote_idx, weight);
-                   println!("DEBUG: Added edge {} -> {} with weight {:.6}", base, quote, weight);
+        for (symbol, (bid, ask, _)) in tickers {
+            if let Some((base, quote)) = parse_symbol(symbol) {
+                if let (Some(&base_idx), Some(&quote_idx)) = (node_indices.get(&base), node_indices.get(&quote)) {
+                    if *bid > 0.0 {
+                        let weight = -bid.ln();
+                        graph.add_edge(base_idx, quote_idx, weight);
+                    }
+                    if *ask > 0.0 {
+                        let weight = -(1.0 / ask).ln();
+                        graph.add_edge(quote_idx, base_idx, weight);
+                    }
                 }
-                if *ask > 0.0 {
-                   let weight = -(1.0 / ask).ln();
-                   graph.add_edge(quote_idx, base_idx, weight);
-                   println!("DEBUG: Added edge {} -> {} with weight {:.6}", quote, base, weight);
-                }
-             } else {
-                println!("DEBUG: Could not find nodes for {}/{}", base, quote);
-             }
-          } else {
-             println!("DEBUG: Failed to parse {}", symbol);
-          }
-       }
+            }
+        }
 
-       (graph, node_indices)
+        (graph, node_indices)
     }
 
-    fn calculate_execution_chance(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
-        let mut score = 0.0;
-        let mut count = 0;
+    fn calculate_execution_chance(&self, path: &[String]) -> f64 {
+        match path.len() {
+            3 => 85.0,
+            4 => 75.0,
+            _ => 70.0,
+        }
+    }
+
+    fn calculate_real_profit(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
+        if path.len() < 3 || path.first() != path.last() {
+            return -100.0;
+        }
+        
+        let mut amount = 1.0;
         
         for i in 0..path.len() - 1 {
-            let symbol = format!("{}{}", path[i], path[i + 1]);
-            if let Some((bid, ask, timestamp)) = tickers.get(&symbol) {
-                let spread = (ask - bid) / bid;
-                let spread_score = 1.0 - (spread / 0.01).min(1.0);
-                
-                let age = (Utc::now().timestamp_millis() - timestamp) as f64 / 1000.0;
-                let recency_score = 1.0 - (age / 5.0).min(1.0);
-                
-                score += spread_score * 0.6 + recency_score * 0.4;
-                count += 1;
+            let from = &path[i];
+            let to = &path[i + 1];
+            
+            let pair = format!("{}{}", from, to);
+            if let Some((bid, _, _)) = tickers.get(&pair) {
+                amount *= bid;
+                continue;
             }
+            
+            let reverse_pair = format!("{}{}", to, from);
+            if let Some((_, ask, _)) = tickers.get(&reverse_pair) {
+                amount *= 1.0 / ask;
+                continue;
+            }
+            
+            return -100.0;
         }
         
-        if count == 0 { return 50.0; }
-        
-        let avg_score = score / count as f64;
-        50.0 + (avg_score * 45.0)
+        (amount - 1.0) * 100.0
     }
 
-    // Add this method to ArbitrageDetector
-    fn debug_graph(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, tickers: &HashMap<String, (f64, f64, i64)>) {
-    println!("=== GRAPH DEBUG ===");
-    println!("Nodes: {}", graph.node_count());
-    println!("Edges: {}", graph.edge_count());
-    
-    // Show first 20 nodes as sample
-    println!("Sample nodes (first 20):");
-    let mut node_count = 0;
-    for node in graph.node_indices() {
-        if node_count >= 20 { break; }
-        println!("  {}: {}", node.index(), graph[node]);
-        node_count += 1;
-    }
-    
-    // Show all edges for a few currencies to see cycles
-    let test_currencies = vec!["BTC", "ETH", "BNB", "USDT"];
-    for currency in test_currencies {
-        if let Some(&idx) = node_indices.get(currency) {
-            println!("Edges involving {}:", currency);
-            for edge in graph.edges_directed(idx, petgraph::Direction::Outgoing) {
-                let target = graph[edge.target()].clone();
-                println!("  {} -> {} : weight = {:.6}", currency, target, *edge.weight());
-            }
-            for edge in graph.edges_directed(idx, petgraph::Direction::Incoming) {
-                let source = graph[edge.source()].clone();
-                println!("  {} <- {} : weight = {:.6}", currency, source, *edge.weight());
-            }
-        } else {
-            println!("{} not found in graph nodes", currency);
-            // Show what similar nodes exist
-            println!("  Looking for similar nodes:");
-            for node in graph.node_indices() {
-                let name = &graph[node];
-                if name.contains("BTC") || name.contains("ETH") || name.contains("BNB") {
-                    println!("    Found: {}", name);
-                }
-            }
-        }
-    }
-    
-    // Manually check a few pairs to verify prices
-    println!("Sample pair prices:");
-    let sample_pairs = vec!["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
-    for pair in sample_pairs {
-        if let Some((bid, ask, ts)) = tickers.get(pair) {
-            println!("  {}: bid={:.2}, ask={:.2}, spread={:.4}%", pair, bid, ask, (ask-bid)/bid*100.0);
-        }
-    }
-    
-    // Try to find any cycle by brute force for small subset
-    println!("Checking for simple 3-currency cycles:");
-    let top_nodes: Vec<_> = graph.node_indices().take(10).collect();
-    for i in 0..top_nodes.len() {
-        for j in 0..top_nodes.len() {
-            if i == j { continue; }
-            for k in 0..top_nodes.len() {
-                if k == i || k == j { continue; }
-                
-                // Check if cycle exists
-                let a = top_nodes[i];
-                let b = top_nodes[j];
-                let c = top_nodes[k];
-                
-                let ab = graph.find_edge(a, b);
-                let bc = graph.find_edge(b, c);
-                let ca = graph.find_edge(c, a);
-                
-                if let (Some(ab_e), Some(bc_e), Some(ca_e)) = (ab, bc, ca) {
-                      let weight_sum = graph[ab_e] + graph[bc_e] + graph[ca_e];
-                      let names = (graph[a].clone(), graph[b].clone(), graph[c].clone());
-                      println!("  Cycle {}->{}->{}->{}: total weight = {:.6}", names.0, names.1, names.2, names.0, weight_sum);
-                      if weight_sum < 0.0 {
-                          let profit = (-weight_sum).exp() - 1.0;
-                          println!("    🔥 NEGATIVE CYCLE! Profit: {:.4}%", profit * 100.0);
-                      }
-                  }
-              }
-          }
-      }
-    
-      println!("=== END DEBUG ===");
-    }
-
-    fn find_profitable_triangles(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
-                             tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize) {
-       let mut opportunities = Vec::new();
-       let mut total_paths_checked = 0;
-    
-       println!("🔎 Starting Bellman-Ford search...");
-       let nodes: Vec<_> = graph.node_indices().collect();
-       println!("Total nodes to check: {}", nodes.len());
-    
-       for (start_idx, &start_node) in nodes.iter().enumerate().take(20) {
-           println!("\n--- Running Bellman-Ford from node {}: '{}' ---", start_idx, graph[start_node]);
-        
-           match bellman_ford(graph, start_node) {
-               Ok(paths) => {
-                   let distances = paths.distances;
-                   let predecessors = paths.predecessors;
-                
-                // Check for negative cycles
-                   for edge in graph.raw_edges() {
-                       let u = edge.source();
-                       let v = edge.target();
-                    
-                       if distances[u.index()] + edge.weight < distances[v.index()] - 1e-10 {
-                           total_paths_checked += 1;
-                        
-                           if let Some(cycle_nodes) = self.reconstruct_cycle(&predecessors, v) {
-    // Ensure cycle returns to start and has at least 3 nodes
-                               if cycle_nodes.len() >= 3 && cycle_nodes.first() == cycle_nodes.last() {
-                                  let path: Vec<String> = cycle_nodes.iter().map(|&idx| graph[idx].clone()).collect();
-                                  println!("  🔥 Found cycle: {:?}", path);
-        
-        // Calculate REAL profit
-                                  let profit = self.calculate_real_profit(&path, tickers);
-        
-        // Only include if profit is positive and reasonable
-                                  if profit > min_profit && profit < 100.0 {
-                                  println!("  ✅ Valid profit: {:.4}%", profit);
-            
-                                     let chance = self.calculate_execution_chance(&path, tickers);
-                                     let pair = path.join(" → ");
-            
-                                     opportunities.push(ArbitrageOpportunity {
-                                        pair,
-                                        triangle: path,
-                                        profit_margin_before: profit,
-                                        profit_margin_after: profit * 0.9,
-                                        chance_of_executing: chance,
-                                        timestamp: Utc::now().timestamp_millis(),
-                                        exchange: "unknown".to_string(),
-                                        estimated_slippage: profit * 0.1,
-                                     });
-                                  } else {
-                                     println!("  ❌ Invalid profit: {:.4}%", profit);
-                                  }
-                               }
-                           }
-                           break;
-                       }
-                   }
-               }
-               Err(_) => {
-                   println!("  ⚠️ Negative cycle detected from {}", graph[start_node]);
-                
-                // Extract cycle using find_negative_cycle
-                   if let Some(cycle) = find_negative_cycle(graph, start_node) {
-                       let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
-                    
-                    // Verify cycle returns to start
-                       if path.len() >= 3 && path.first() == path.last() {
-                           println!("  🔥 Extracted cycle: {:?}", path);
-                        
-                           let profit = self.calculate_real_profit(&path, tickers);
-                        
-                           if profit > min_profit && profit < 100.0 {
-                               let chance = self.calculate_execution_chance(&path, tickers);
-                               let pair = path.join(" → ");
-                            
-                               opportunities.push(ArbitrageOpportunity {
-                                   pair,
-                                   triangle: path,
-                                   profit_margin_before: profit,
-                                   profit_margin_after: profit * 0.9,
-                                   chance_of_executing: chance,
-                                   timestamp: Utc::now().timestamp_millis(),
-                                   exchange: "unknown".to_string(),
-                                   estimated_slippage: profit * 0.1,
-                               });
-                           }
-                       }
-                   }
-               }
-           }
-       }
-    
-    // Deduplicate
-       let mut seen = std::collections::HashSet::new();
-       opportunities.retain(|opp| {
-           let mut cycle = opp.triangle.clone();
-           cycle.sort();
-           if seen.contains(&cycle) {
-               false
-           } else {
-               seen.insert(cycle);
-               true
-           }
-       });
-    
-       let profitable_count = opportunities.len();
-       println!("\n📊 Found {} unique opportunities", profitable_count);
-       (opportunities, total_paths_checked, profitable_count)
-    }
-    
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex) -> Option<Vec<NodeIndex>> {
         let mut cycle = Vec::new();
         let mut visited = HashSet::new();
@@ -1066,113 +731,129 @@ impl ArbitrageDetector {
         None
     }
 
-    fn calculate_cycle_profit(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
-       let mut amount = 1.0;
-    
-       for i in 0..path.len() - 1 {
-           let from = &path[i];
-           let to = &path[i + 1];
+    fn find_opportunities(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
+                         tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
+        let mut opportunities = Vec::new();
+        let mut paths_checked = 0;
+        let mut valid_triangles = 0;
         
-        // Try direct pair
-           let direct_pair = format!("{}{}", from, to);
-           if let Some((bid, _, _)) = tickers.get(&direct_pair) {
-               amount *= bid;
-               continue;
-           }
+        let nodes: Vec<_> = graph.node_indices().collect();
         
-        // Try reverse pair
-           let reverse_pair = format!("{}{}", to, from);
-           if let Some((_, ask, _)) = tickers.get(&reverse_pair) {
-               amount *= 1.0 / ask;
-               continue;
-           }
+        for &start_node in nodes.iter().take(30) {
+            match bellman_ford(graph, start_node) {
+                Ok(paths) => {
+                    let distances = paths.distances;
+                    let predecessors = paths.predecessors;
+                    
+                    for edge in graph.raw_edges() {
+                        let u = edge.source();
+                        let v = edge.target();
+                        
+                        if distances[u.index()] + edge.weight < distances[v.index()] - 1e-10 {
+                            paths_checked += 1;
+                            
+                            if let Some(cycle_nodes) = self.reconstruct_cycle(&predecessors, v) {
+                                if cycle_nodes.len() >= 3 && cycle_nodes.first() == cycle_nodes.last() {
+                                    valid_triangles += 1;
+                                    let path: Vec<String> = cycle_nodes.iter().map(|&idx| graph[idx].clone()).collect();
+                                    
+                                    let profit = self.calculate_real_profit(&path, tickers);
+                                    
+                                    if profit > min_profit && profit < 100.0 {
+                                        let chance = self.calculate_execution_chance(&path);
+                                        let pair = path.join(" → ");
+                                        
+                                        opportunities.push(ArbitrageOpportunity {
+                                            pair,
+                                            triangle: path,
+                                            profit_margin_before: profit,
+                                            profit_margin_after: profit * 0.9,
+                                            chance_of_executing: chance,
+                                            timestamp: Utc::now().timestamp_millis(),
+                                            exchange: "unknown".to_string(),
+                                            estimated_slippage: profit * 0.1,
+                                        });
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {
+                    if let Some(cycle) = find_negative_cycle(graph, start_node) {
+                        let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
+                        
+                        if path.len() >= 3 && path.first() == path.last() {
+                            paths_checked += 1;
+                            valid_triangles += 1;
+                            
+                            let profit = self.calculate_real_profit(&path, tickers);
+                            
+                            if profit > min_profit && profit < 100.0 {
+                                let chance = self.calculate_execution_chance(&path);
+                                let pair = path.join(" → ");
+                                
+                                opportunities.push(ArbitrageOpportunity {
+                                    pair,
+                                    triangle: path,
+                                    profit_margin_before: profit,
+                                    profit_margin_after: profit * 0.9,
+                                    chance_of_executing: chance,
+                                    timestamp: Utc::now().timestamp_millis(),
+                                    exchange: "unknown".to_string(),
+                                    estimated_slippage: profit * 0.1,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
-        // If no pair found, log warning
-           println!("WARNING: No rate found for {} → {}", from, to);
-           return 0.0;
-       }
-    
-    // Calculate profit percentage
-       let profit = (amount - 1.0) * 100.0;
-    
-    // Sanity check - if profit is over 1000%, something's wrong
-       if profit > 1000.0 {
-           println!("WARNING: Suspiciously high profit: {}%", profit);
-           println!("Path: {:?}", path);
-           println!("Amount multiplier: {}", amount);
-       }
-    
-       profit
-    }
-
-    fn calculate_real_profit(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
-    // Path must return to start (e.g., BTC → ETH → USDT → BTC)
-       if path.len() < 3 || path.first() != path.last() {
-           return -100.0;
-       }
-    
-       let mut amount = 1.0;
-    
-       for i in 0..path.len() - 1 {
-           let from = &path[i];
-           let to = &path[i + 1];
+        // Deduplicate
+        let mut seen = HashSet::new();
+        opportunities.retain(|opp| {
+            let mut cycle = opp.triangle.clone();
+            cycle.sort();
+            if seen.contains(&cycle) {
+                false
+            } else {
+                seen.insert(cycle);
+                true
+            }
+        });
         
-        // Try direct pair
-           let pair = format!("{}{}", from, to);
-           if let Some((bid, ask, _)) = tickers.get(&pair) {
-            // For forward direction (base → quote), use bid price
-               amount *= bid;
-               continue;
-           }
-        
-        // Try reverse pair
-           let reverse_pair = format!("{}{}", to, from);
-           if let Some((bid, ask, _)) = tickers.get(&reverse_pair) {
-            // For reverse direction (quote → base), use 1/ask
-               amount *= 1.0 / ask;
-               continue;
-           }
-        
-           return -100.0; // Missing rate
-       }
-    
-    // Profit as percentage
-       (amount - 1.0) * 100.0
+        let profitable = opportunities.len();
+        (opportunities, paths_checked, valid_triangles, profitable)
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
-       -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
-    
-       println!("🔍 Starting scan for {} ({} seconds)", exchange, duration_secs);
-    
-       let (summary, data, logs) = match exchange {
-           "binance" => {
-               println!("📡 Connecting to Binance WebSocket...");
-               let summary = self.binance_collector.start_collection(duration_secs).await;
-               println!("✅ Binance collected {} pairs", summary.pairs_collected);
-               (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
-           }
-           "bybit" => {
-               println!("📡 Connecting to Bybit WebSocket...");
-               let summary = self.bybit_collector.start_collection(duration_secs).await;
-               println!("✅ Bybit collected {} pairs", summary.pairs_collected);
-               (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
-           }
-           "kucoin" => {
-               println!("📡 Connecting to KuCoin WebSocket...");
-               let summary = self.kucoin_collector.start_collection(duration_secs).await;
-               println!("✅ KuCoin collected {} pairs", summary.pairs_collected);
-               (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
+        -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
+        
+        println!("🔍 Scanning {} for {}s", exchange, duration_secs);
+        
+        let (summary, data, logs) = match exchange {
+            "binance" => {
+                let summary = self.binance_collector.start_collection(duration_secs).await;
+                (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
             }
-            _ => {
-                return (Vec::new(), ScanSummary {
-                   exchange: exchange.to_string(),
-                   pairs_collected: 0,
-                   paths_found: 0,
-                   profitable_triangles: 0,
-                   collection_time_secs: 0,
-                }, Vec::new())
+            "bybit" => {
+                let summary = self.bybit_collector.start_collection(duration_secs).await;
+                (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
             }
+            "kucoin" => {
+                let summary = self.kucoin_collector.start_collection(duration_secs).await;
+                (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
+            }
+            _ => return (Vec::new(), ScanSummary {
+                exchange: exchange.to_string(),
+                pairs_collected: 0,
+                paths_checked: 0,
+                valid_triangles: 0,
+                profitable_triangles: 0,
+                collection_time_secs: 0,
+            }, Vec::new())
         };
 
         let data_guard = data.lock().await;
@@ -1183,168 +864,38 @@ impl ArbitrageDetector {
         let scan_logs = logs_guard.clone();
         drop(logs_guard);
 
-        println!("📊 {} collected {} total tickers", exchange, tickers.len());
+        println!("📊 {} pairs collected", tickers.len());
 
         if tickers.is_empty() {
-           println!("⚠️ No tickers collected for {}", exchange);
-           return (Vec::new(), summary, scan_logs);
+            return (Vec::new(), summary, scan_logs);
         }
 
-        println!("🔨 Building currency graph for {}...", exchange);
         let (graph, node_indices) = self.build_graph(&tickers);
-        println!("📈 Graph has {} nodes and {} edges", graph.node_count(), graph.edge_count());
+        println!("📈 Graph: {} nodes, {} edges", graph.node_count(), graph.edge_count());
 
-        // === ADD THIS TEMPORARY DEBUG CODE ===
-        println!("\n=== CHECKING ETH-BTC EDGE SPECIFICALLY ===");
-        if let (Some(&btc_idx), Some(&eth_idx)) = (node_indices.get("BTC"), node_indices.get("ETH")) {
-    // Check all edges involving BTC and ETH
-           println!("Checking edges between ETH and BTC:");
-    
-    // Check ETH -> BTC
-           let eth_to_btc = graph.find_edge(eth_idx, btc_idx);
-           println!("  ETH -> BTC edge exists: {}", eth_to_btc.is_some());
-           if let Some(edge_idx) = eth_to_btc {
-              println!("    Weight: {:.6}", graph[edge_idx]);
-           }
-    
-    // Check BTC -> ETH
-           let btc_to_eth = graph.find_edge(btc_idx, eth_idx);
-           println!("  BTC -> ETH edge exists: {}", btc_to_eth.is_some());
-           if let Some(edge_idx) = btc_to_eth {
-              println!("    Weight: {:.6}", graph[edge_idx]);
-           }
-    
-    // Look at all tickers that might contain ETH/BTC
-           println!("\nSearching for ETH/BTC in tickers:");
-           for (sym, (bid, ask, _)) in tickers.iter() {
-              if sym.contains("ETH") && sym.contains("BTC") {
-                 println!("  Found: {} - bid={}, ask={}", sym, bid, ask);
-                 if let Some((base, quote)) = Self::parse_symbol(sym) {
-                    println!("    Parsed as: {}/{}", base, quote);
-                 }
-              }
-           }
-        } else {
-           println!("BTC or ETH node not found in graph!");
-           if node_indices.get("BTC").is_none() {
-              println!("  BTC node missing");
-           }
-           if node_indices.get("ETH").is_none() {
-              println!("  ETH node missing");
-           }
-        }
-// === END TEMPORARY DEBUG CODE ===   
-           
-        self.debug_graph(&graph, &node_indices, &tickers); //  
+        let (opportunities, paths_checked, valid_triangles, profitable) = 
+            self.find_opportunities(&graph, &node_indices, &tickers, min_profit);
 
-        // Add this right after you build the graph
-        println!("\n=== GRAPH STRUCTURE DEBUG ===");
-        println!("Total nodes: {}", graph.node_count());
-        println!("Total edges: {}", graph.edge_count());
+        println!("📊 Results: {} paths, {} valid triangles, {} profitable", 
+                 paths_checked, valid_triangles, profitable);
 
-// Check if major currencies are connected
-        let major_currencies = ["BTC", "ETH", "BNB", "USDT", "USDC"];
-        for currency in &major_currencies {
-           if let Some(&node_idx) = node_indices.get(*currency) {
-              let mut connections = 0;
-              for edge in graph.edges_directed(node_idx, petgraph::Direction::Outgoing) {
-                 connections += 1;
-              }
-              println!("{} has {} outgoing edges", currency, connections);
-           } else {
-              println!("{} NOT FOUND in graph", currency);
-           }
-        }
+        let mut final_summary = summary;
+        final_summary.paths_checked = paths_checked;
+        final_summary.valid_triangles = valid_triangles;
+        final_summary.profitable_triangles = profitable;
 
-// Test a specific path: BTC -> USDT -> ETH -> BTC
-        if let (Some(&btc), Some(&usdt), Some(&eth)) = (
-           node_indices.get("BTC"),
-           node_indices.get("USDT"), 
-           node_indices.get("ETH")
-        ) {
-           let has_btc_usdt = graph.find_edge(btc, usdt).is_some();
-           let has_usdt_eth = graph.find_edge(usdt, eth).is_some();
-           let has_eth_btc = graph.find_edge(eth, btc).is_some();
-    
-           println!("\nBTC->USDT->ETH->BTC path:");
-           println!("  BTC->USDT edge: {}", has_btc_usdt);
-           println!("  USDT->ETH edge: {}", has_usdt_eth);
-           println!("  ETH->BTC edge: {}", has_eth_btc);
-    
-           if has_btc_usdt && has_usdt_eth && has_eth_btc {
-              println!("  ✅ Path exists!");
-           } else {
-              println!("  ❌ Path incomplete - missing edges");
-           }
-        }
-
-        println!("\n=== TESTING SPECIFIC CYCLES ===");
-
-// Test BTC -> USDT -> ETH -> BTC
-        if let (Some(&btc), Some(&usdt), Some(&eth)) = (
-           node_indices.get("BTC"),
-           node_indices.get("USDT"),
-           node_indices.get("ETH")
-        ) {
-    // Get edge weights
-           let btc_usdt = graph.find_edge(btc, usdt).map(|e| graph[e]);
-           let usdt_eth = graph.find_edge(usdt, eth).map(|e| graph[e]);
-           let eth_btc = graph.find_edge(eth, btc).map(|e| graph[e]);
-    
-           if let (Some(w1), Some(w2), Some(w3)) = (btc_usdt, usdt_eth, eth_btc) {
-              let total = w1 + w2 + w3;
-              println!("BTC->USDT->ETH->BTC total weight: {:.6}", total);
-              if total < 0.0 {
-                 let profit = (-total).exp() - 1.0;
-                 println!("  ✅ This is a NEGATIVE CYCLE! Profit: {:.4}%", profit * 100.0);
-              } else {
-                 println!("  ❌ Not a negative cycle (need <0, got {:.6})", total);
-              }
-           }
-        }
-
-// Test BTC -> ETH -> USDT -> BTC
-        if let (Some(&btc), Some(&eth), Some(&usdt)) = (
-           node_indices.get("BTC"),
-           node_indices.get("ETH"),
-           node_indices.get("USDT")
-        ) {
-           let btc_eth = graph.find_edge(btc, eth).map(|e| graph[e]);
-           let eth_usdt = graph.find_edge(eth, usdt).map(|e| graph[e]);
-           let usdt_btc = graph.find_edge(usdt, btc).map(|e| graph[e]);
-    
-           if let (Some(w1), Some(w2), Some(w3)) = (btc_eth, eth_usdt, usdt_btc) {
-              let total = w1 + w2 + w3;
-              println!("BTC->ETH->USDT->BTC total weight: {:.6}", total);
-              if total < 0.0 {
-                 let profit = (-total).exp() - 1.0;
-                 println!("  ✅ This is a NEGATIVE CYCLE! Profit: {:.4}%", profit * 100.0);
-              } else {
-                 println!("  ❌ Not a negative cycle (need <0, got {:.6})", total);
-              }
-           }
-        }
-    
-        println!("🔎 Running Bellman-Ford to find arbitrage opportunities...");
-        let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
-    
-        println!("📊 Results for {}: {} paths checked, {} profitable triangles found", 
-               exchange, paths_found, profitable);
-
-        for opp in &mut opportunities {
+        let mut final_opportunities = opportunities;
+        for opp in &mut final_opportunities {
             opp.exchange = exchange.to_string();
         }
 
-        let mut final_summary = summary;
-        final_summary.paths_found = paths_found;
-        final_summary.profitable_triangles = profitable;
-
-        (opportunities, final_summary, scan_logs)
+        (final_opportunities, final_summary, scan_logs)
     }
 
     pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
         -> ScanResponse {
         
+        println!("🚀 Multi-exchange scan started");
         let mut all_opportunities = Vec::new();
         let mut all_summaries = Vec::new();
         let mut all_logs = Vec::new();
@@ -1358,6 +909,8 @@ impl ArbitrageDetector {
         
         all_opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap());
         
+        println!("✅ Scan complete: {} opportunities", all_opportunities.len());
+        
         ScanResponse {
             opportunities: all_opportunities,
             summaries: all_summaries,
@@ -1366,10 +919,10 @@ impl ArbitrageDetector {
     }
 }
 
-// ==================== API Handlers ====================
+/ ==================== API Handlers ====================
 
 async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
-    println!("Received scan request for exchanges: {:?}", req.exchanges);
+    println!("📨 Scan request: {:?}", req.exchanges);
     
     if req.exchanges.is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({
@@ -1390,12 +943,11 @@ async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
         duration
     ).await;
     
-    println!("Scan complete. Found {} opportunities", response.opportunities.len());
     HttpResponse::Ok().json(response)
 }
 
 async fn health_handler() -> impl Responder {
-    HttpResponse::Ok().body("Arbitrage Scanner API is running with Binance, Bybit, and KuCoin support")
+    HttpResponse::Ok().body("Arbitrage Scanner API is running")
 }
 
 // ==================== Main ====================
@@ -1407,25 +959,23 @@ async fn main() -> std::io::Result<()> {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let bind_addr = format!("0.0.0.0:{}", port);
     
-    println!("Starting arbitrage scanner backend on {}", bind_addr);
-    println!("API endpoints: /health, /api/scan (POST)");
-    println!("Frontend serving from ./static directory");
+    println!("🚀 Server starting on {}", bind_addr);
+    println!("📡 Exchanges: binance, bybit, kucoin");
     
     HttpServer::new(|| {
-    let cors = Cors::default()
-        .allow_any_origin()
-        .allow_any_method()
-        .allow_any_header();
-        
-    App::new()
-        .wrap(cors)
-        // API ROUTES FIRST - these need to be before the static files
-        .route("/health", web::get().to(health_handler))
-        .route("/api/scan", web::post().to(scan_handler))
-        // STATIC FILES LAST - this catches everything else
-        .service(fs::Files::new("/", "./static").index_file("index.html"))
+        Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header()
+            .max_age(3600);
+            
+        App::new()
+            .route("/health", web::get().to(health_handler))
+            .route("/api/scan", web::post().to(scan_handler))
+            .service(fs::Files::new("/", "./static").index_file("index.html"))
     })
     .bind(&bind_addr)?
     .run()
     .await
-}
+  }
+   
