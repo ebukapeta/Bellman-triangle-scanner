@@ -1277,6 +1277,53 @@ impl ArbitrageDetector {
               println!("  ❌ Path incomplete - missing edges");
            }
         }
+
+        println!("\n=== TESTING SPECIFIC CYCLES ===");
+
+// Test BTC -> USDT -> ETH -> BTC
+        if let (Some(&btc), Some(&usdt), Some(&eth)) = (
+           node_indices.get("BTC"),
+           node_indices.get("USDT"),
+           node_indices.get("ETH")
+        ) {
+    // Get edge weights
+           let btc_usdt = graph.find_edge(btc, usdt).map(|e| graph[e]);
+           let usdt_eth = graph.find_edge(usdt, eth).map(|e| graph[e]);
+           let eth_btc = graph.find_edge(eth, btc).map(|e| graph[e]);
+    
+           if let (Some(w1), Some(w2), Some(w3)) = (btc_usdt, usdt_eth, eth_btc) {
+              let total = w1 + w2 + w3;
+              println!("BTC->USDT->ETH->BTC total weight: {:.6}", total);
+              if total < 0.0 {
+                 let profit = (-total).exp() - 1.0;
+                 println!("  ✅ This is a NEGATIVE CYCLE! Profit: {:.4}%", profit * 100.0);
+              } else {
+                 println!("  ❌ Not a negative cycle (need <0, got {:.6})", total);
+              }
+           }
+        }
+
+// Test BTC -> ETH -> USDT -> BTC
+        if let (Some(&btc), Some(&eth), Some(&usdt)) = (
+           node_indices.get("BTC"),
+           node_indices.get("ETH"),
+           node_indices.get("USDT")
+        ) {
+           let btc_eth = graph.find_edge(btc, eth).map(|e| graph[e]);
+           let eth_usdt = graph.find_edge(eth, usdt).map(|e| graph[e]);
+           let usdt_btc = graph.find_edge(usdt, btc).map(|e| graph[e]);
+    
+           if let (Some(w1), Some(w2), Some(w3)) = (btc_eth, eth_usdt, usdt_btc) {
+              let total = w1 + w2 + w3;
+              println!("BTC->ETH->USDT->BTC total weight: {:.6}", total);
+              if total < 0.0 {
+                 let profit = (-total).exp() - 1.0;
+                 println!("  ✅ This is a NEGATIVE CYCLE! Profit: {:.4}%", profit * 100.0);
+              } else {
+                 println!("  ❌ Not a negative cycle (need <0, got {:.6})", total);
+              }
+           }
+        }
     
         println!("🔎 Running Bellman-Ford to find arbitrage opportunities...");
         let (mut opportunities, paths_found, profitable) = self.find_profitable_triangles(&graph, &node_indices, &tickers, min_profit);
