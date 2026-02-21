@@ -308,6 +308,7 @@ impl BybitCollector {
         let start_time = Instant::now();
         let deadline = start_time + Duration::from_secs(duration_secs);
         
+        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -331,7 +332,7 @@ impl BybitCollector {
             Ok((ws_stream, _)) => {
                 let (mut write, mut read) = ws_stream.split();
                 
-                // Bybit subscription format
+                // Subscribe to all tickers
                 let subscribe_msg = serde_json::json!({
                     "op": "subscribe",
                     "args": ["tickers"]
@@ -357,11 +358,11 @@ impl BybitCollector {
 
                     match msg {
                         Ok(Message::Text(text)) => {
-                            if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                // Bybit sends ticker data in the "data" field when topic is "tickers"
-                                if let Some(topic) = ticker_data.get("topic").and_then(|t| t.as_str()) {
+                            if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                // Bybit sends tickers in messages with "topic" starting with "tickers."
+                                if let Some(topic) = msg_data.get("topic").and_then(|t| t.as_str()) {
                                     if topic.starts_with("tickers.") {
-                                        if let Some(data) = ticker_data.get("data") {
+                                        if let Some(data) = msg_data.get("data") {
                                             if let (Some(symbol), Some(bid), Some(ask)) = (
                                                 data.get("symbol").and_then(|s| s.as_str()),
                                                 data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
@@ -462,6 +463,7 @@ impl KuCoinCollector {
         let start_time = Instant::now();
         let deadline = start_time + Duration::from_secs(duration_secs);
         
+        // Clear previous data
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -479,7 +481,7 @@ impl KuCoinCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        // Get WebSocket token
+        // Get WebSocket token from KuCoin REST API
         let client = reqwest::Client::new();
         let token_url = "https://api.kucoin.com/api/v1/bullet-public";
         
@@ -496,7 +498,7 @@ impl KuCoinCollector {
                             Ok((ws_stream, _)) => {
                                 let (mut write, mut read) = ws_stream.split();
                                 
-                                // KuCoin subscription format for tickers
+                                // Subscribe to all tickers
                                 let subscribe_msg = serde_json::json!({
                                     "id": "1",
                                     "type": "subscribe",
@@ -525,10 +527,10 @@ impl KuCoinCollector {
 
                                     match msg {
                                         Ok(Message::Text(text)) => {
-                                            if let Ok(ticker_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                                // KuCoin sends ticker data in messages with type "message"
-                                                if ticker_data["type"].as_str() == Some("message") {
-                                                    if let Some(data) = ticker_data.get("data") {
+                                            if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                                // KuCoin sends tickers in messages with type "message"
+                                                if msg_data.get("type").and_then(|t| t.as_str()) == Some("message") {
+                                                    if let Some(data) = msg_data.get("data") {
                                                         // KuCoin uses hyphen in symbols: BTC-USDT
                                                         if let (Some(symbol), Some(bestBid), Some(bestAsk)) = (
                                                             data.get("symbol").and_then(|s| s.as_str()),
@@ -588,7 +590,21 @@ impl KuCoinCollector {
                                 });
                             }
                         }
+                    } else {
+                        logs_clone.lock().await.push(ScanLog {
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            exchange: "kucoin".to_string(),
+                            message: "Failed to parse WebSocket token".to_string(),
+                            level: "error".to_string(),
+                        });
                     }
+                } else {
+                    logs_clone.lock().await.push(ScanLog {
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        exchange: "kucoin".to_string(),
+                        message: "Failed to parse token response".to_string(),
+                        level: "error".to_string(),
+                    });
                 }
             }
             Err(e) => {
@@ -622,7 +638,7 @@ impl KuCoinCollector {
     pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
         self.logs.clone()
     }
-}
+ }
 
 // ==================== Arbitrage Detector ====================
 
