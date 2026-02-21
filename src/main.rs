@@ -332,7 +332,7 @@ impl BybitCollector {
             Ok((ws_stream, _)) => {
                 let (mut write, mut read) = ws_stream.split();
                 
-                // Subscribe to all tickers
+                // Subscribe to all tickers - Bybit uses "tickers" topic [citation:5]
                 let subscribe_msg = serde_json::json!({
                     "op": "subscribe",
                     "args": ["tickers"]
@@ -359,9 +359,10 @@ impl BybitCollector {
                     match msg {
                         Ok(Message::Text(text)) => {
                             if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                // Bybit sends tickers in messages with "topic" starting with "tickers."
+                                // Bybit sends tickers with topic field starting with "tickers." [citation:1]
                                 if let Some(topic) = msg_data.get("topic").and_then(|t| t.as_str()) {
                                     if topic.starts_with("tickers.") {
+                                        // The actual data is nested in a "data" field [citation:1]
                                         if let Some(data) = msg_data.get("data") {
                                             if let (Some(symbol), Some(bid), Some(ask)) = (
                                                 data.get("symbol").and_then(|s| s.as_str()),
@@ -392,15 +393,6 @@ impl BybitCollector {
                             break;
                         }
                         _ => {}
-                    }
-
-                    if pair_count > 0 && pair_count % 500 == 0 {
-                        logs_clone.lock().await.push(ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "bybit".to_string(),
-                            message: format!("Collected {} pairs", pair_count),
-                            level: "debug".to_string(),
-                        });
                     }
                 }
 
@@ -445,7 +437,6 @@ impl BybitCollector {
 }
 
 // ==================== KuCoin WebSocket Collector ====================
-
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -481,137 +472,97 @@ impl KuCoinCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
-        // Get WebSocket token from KuCoin REST API
-        let client = reqwest::Client::new();
-        let token_url = "https://api.kucoin.com/api/v1/bullet-public";
+        // For public market data, KuCoin DOES NOT require a token [citation:9]
+        // Connect directly to the public WebSocket endpoint
+        let ws_url = "wss://ws-api.kucoin.com/endpoint";
         
-        match client.post(token_url).send().await {
-            Ok(resp) => {
-                if let Ok(token_data) = resp.json::<serde_json::Value>().await {
-                    if let (Some(endpoint), Some(token)) = (
-                        token_data["data"]["instanceServers"][0]["endpoint"].as_str(),
-                        token_data["data"]["token"].as_str()
-                    ) {
-                        let ws_url = format!("{}?token={}", endpoint, token);
-                        
-                        match connect_async(&ws_url).await {
-                            Ok((ws_stream, _)) => {
-                                let (mut write, mut read) = ws_stream.split();
-                                
-                                // Subscribe to all tickers
-                                let subscribe_msg = serde_json::json!({
-                                    "id": "1",
-                                    "type": "subscribe",
-                                    "topic": "/market/ticker:all",
-                                    "privateChannel": false,
-                                    "response": true
-                                });
-                                
-                                if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
-                                    let _ = write.send(Message::Text(msg_str)).await;
-                                }
-
-                                logs_clone.lock().await.push(ScanLog {
-                                    timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                    exchange: "kucoin".to_string(),
-                                    message: "WebSocket connected".to_string(),
-                                    level: "success".to_string(),
-                                });
-
-                                let mut pair_count = 0;
-
-                                while let Some(msg) = read.next().await {
-                                    if Instant::now() >= deadline {
-                                        break;
-                                    }
-
-                                    match msg {
-                                        Ok(Message::Text(text)) => {
-                                            if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                                                // KuCoin sends tickers in messages with type "message"
-                                                if msg_data.get("type").and_then(|t| t.as_str()) == Some("message") {
-                                                    if let Some(data) = msg_data.get("data") {
-                                                        // KuCoin uses hyphen in symbols: BTC-USDT
-                                                        if let (Some(symbol), Some(bestBid), Some(bestAsk)) = (
-                                                            data.get("symbol").and_then(|s| s.as_str()),
-                                                            data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                                            data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                                        ) {
-                                                            // Convert KuCoin's format (BTC-USDT) to standard (BTCUSDT)
-                                                            let std_symbol = symbol.replace("-", "");
-                                                            if parse_symbol(&std_symbol).is_some() {
-                                                                let mut data_map = data_clone.lock().await;
-                                                                data_map.insert(std_symbol, (bestBid, bestAsk, Utc::now().timestamp_millis()));
-                                                                pair_count += 1;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Ok(Message::Ping(data)) => {
-                                            let _ = write.send(Message::Pong(data)).await;
-                                        }
-                                        Err(e) => {
-                                            logs_clone.lock().await.push(ScanLog {
-                                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                                exchange: "kucoin".to_string(),
-                                                message: format!("WebSocket error: {}", e),
-                                                level: "error".to_string(),
-                                            });
-                                            break;
-                                        }
-                                        _ => {}
-                                    }
-
-                                    if pair_count > 0 && pair_count % 500 == 0 {
-                                        logs_clone.lock().await.push(ScanLog {
-                                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                            exchange: "kucoin".to_string(),
-                                            message: format!("Collected {} pairs", pair_count),
-                                            level: "debug".to_string(),
-                                        });
-                                    }
-                                }
-
-                                logs_clone.lock().await.push(ScanLog {
-                                    timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                    exchange: "kucoin".to_string(),
-                                    message: format!("Collection complete: {} pairs", pair_count),
-                                    level: "success".to_string(),
-                                });
-                            }
-                            Err(e) => {
-                                logs_clone.lock().await.push(ScanLog {
-                                    timestamp: Local::now().format("%H:%M:%S").to_string(),
-                                    exchange: "kucoin".to_string(),
-                                    message: format!("WebSocket connection failed: {}", e),
-                                    level: "error".to_string(),
-                                });
-                            }
-                        }
-                    } else {
-                        logs_clone.lock().await.push(ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "kucoin".to_string(),
-                            message: "Failed to parse WebSocket token".to_string(),
-                            level: "error".to_string(),
-                        });
-                    }
-                } else {
+        match connect_async(ws_url).await {
+            Ok((ws_stream, _)) => {
+                let (mut write, mut read) = ws_stream.split();
+                
+                // Wait for welcome message [citation:9]
+                if let Some(Ok(Message::Text(welcome))) = read.next().await {
                     logs_clone.lock().await.push(ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "kucoin".to_string(),
-                        message: "Failed to parse token response".to_string(),
-                        level: "error".to_string(),
+                        message: "WebSocket connected".to_string(),
+                        level: "success".to_string(),
                     });
+                    
+                    // Subscribe to all tickers - KuCoin uses "ticker" channel [citation:9]
+                    let subscribe_msg = serde_json::json!({
+                        "id": "1",
+                        "type": "subscribe",
+                        "topic": "/market/ticker:all",
+                        "privateChannel": false,
+                        "response": true
+                    });
+                    
+                    if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
+                        let _ = write.send(Message::Text(msg_str)).await;
+                    }
                 }
+
+                let mut pair_count = 0;
+
+                while let Some(msg) = read.next().await {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                // KuCoin sends ticker data in messages with type "message" [citation:9]
+                                if msg_data.get("type").and_then(|t| t.as_str()) == Some("message") {
+                                    if let Some(data) = msg_data.get("data") {
+                                        // KuCoin uses hyphens in symbols: BTC-USDT [citation:9]
+                                        if let (Some(symbol), Some(bestBid), Some(bestAsk)) = (
+                                            data.get("symbol").and_then(|s| s.as_str()),
+                                            data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                            data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                        ) {
+                                            // Convert KuCoin's format (BTC-USDT) to standard (BTCUSDT)
+                                            let std_symbol = symbol.replace("-", "");
+                                            if parse_symbol(&std_symbol).is_some() {
+                                                let mut data_map = data_clone.lock().await;
+                                                data_map.insert(std_symbol, (bestBid, bestAsk, Utc::now().timestamp_millis()));
+                                                pair_count += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Message::Ping(data)) => {
+                            // KuCoin requires pong responses to keep connection alive [citation:9]
+                            let _ = write.send(Message::Pong(data)).await;
+                        }
+                        Err(e) => {
+                            logs_clone.lock().await.push(ScanLog {
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                exchange: "kucoin".to_string(),
+                                message: format!("WebSocket error: {}", e),
+                                level: "error".to_string(),
+                            });
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
+                logs_clone.lock().await.push(ScanLog {
+                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                    exchange: "kucoin".to_string(),
+                    message: format!("Collection complete: {} pairs", pair_count),
+                    level: "success".to_string(),
+                });
             }
             Err(e) => {
                 logs_clone.lock().await.push(ScanLog {
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     exchange: "kucoin".to_string(),
-                    message: format!("Failed to get WebSocket token: {}", e),
+                    message: format!("Connection failed: {}", e),
                     level: "error".to_string(),
                 });
             }
@@ -638,7 +589,7 @@ impl KuCoinCollector {
     pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
         self.logs.clone()
     }
- }
+}
 
 // ==================== Arbitrage Detector ====================
 
