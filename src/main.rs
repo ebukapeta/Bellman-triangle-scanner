@@ -919,7 +919,7 @@ impl ArbitrageDetector {
     }
 }
 
-/ ==================== API Handlers ====================
+// ==================== API Handlers ====================
 
 async fn scan_handler(req: web::Json<ScanRequest>) -> impl Responder {
     println!("📨 Scan request: {:?}", req.exchanges);
