@@ -364,6 +364,7 @@ impl BybitCollector {
                                             data.get("bid1Price").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                             data.get("ask1Price").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                         ) {
+                                            // Accept ALL pairs that can be parsed
                                             if parse_symbol(symbol).is_some() {
                                                 let mut data_map = data_clone.lock().await;
                                                 data_map.insert(symbol.to_string(), (bid, ask, Utc::now().timestamp_millis()));
@@ -440,7 +441,6 @@ impl BybitCollector {
 }
 
 // ==================== KuCoin WebSocket Collector ====================
-
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -527,6 +527,7 @@ impl KuCoinCollector {
                                                             data.get("bestBid").and_then(|b| b.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                             data.get("bestAsk").and_then(|a| a.as_str()).and_then(|s| s.parse::<f64>().ok()),
                                                         ) {
+                                                            // Accept ALL pairs that can be parsed
                                                             if parse_symbol(symbol).is_some() {
                                                                 let mut data_map = data_clone.lock().await;
                                                                 data_map.insert(symbol.to_string(), (bestBid, bestAsk, Utc::now().timestamp_millis()));
