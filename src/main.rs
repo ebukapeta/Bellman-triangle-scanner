@@ -690,18 +690,82 @@ impl ArbitrageDetector {
     }
 
     fn parse_symbol(symbol: &str) -> Option<(String, String)> {
-        if symbol.ends_with("USDT") {
-            let base = symbol.trim_end_matches("USDT").to_string();
-            Some((base, "USDT".to_string()))
-        } else if symbol.ends_with("BUSD") {
-            let base = symbol.trim_end_matches("BUSD").to_string();
-            Some((base, "BUSD".to_string()))
-        } else if symbol.ends_with("USDC") {
-            let base = symbol.trim_end_matches("USDC").to_string();
-            Some((base, "USDC".to_string()))
-        } else {
-            None
-        }
+       let s = symbol.to_uppercase();
+    
+    // Handle special cases first
+       if s == "BTCUSD1" || s == "ETHUSD1" || s == "BNBUSD1" || s == "SOLUSD1" || s == "XRPUSD1" {
+        // These are actually BTC/USD, etc. - strip the "1"
+           let base = s[..s.len()-4].to_string();
+           println!("DEBUG: ✓ Special case parsed {} as {}/USD", symbol, base);
+           return Some((base, "USD".to_string()));
+       }
+    
+       if s.ends_with("USD1") && s.len() > 4 {
+           let base = s[..s.len()-4].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/USD", symbol, base);
+               return Some((base, "USD".to_string()));
+           }
+       }
+    
+       if s.ends_with("RLUSD") && s.len() > 5 {
+        // Handle RLUSD (RippleLabs USD) - treat as USD
+           let base = s[..s.len()-5].to_string();
+           if base.len() >= 2 {
+               println!("DEBUG: ✓ Parsed {} as {}/USD", symbol, base);
+               return Some((base, "USD".to_string()));
+           }
+       }
+    
+    // Standard quote currencies in order of length (longest first)
+       let quotes = [
+           "FDUSD", "USDT", "BUSD", "USDC", "DAI", "TUSD", "USD",  // USD variants
+           "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK",  // Major cryptos
+           "MATIC", "AVAX", "UNI", "ATOM", "ALGO", "FIL", "VET", "THETA",  // More cryptos
+           "TRY", "EUR", "GBP", "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR",  // Fiat
+           "NGN", "UAH", "IDR", "JPY", "KRW", "VND", "MXN", "CHF", "PLN",  // More fiat
+       ];
+
+    // Try to match each quote
+       for q in quotes.iter() {
+           if s.ends_with(*q) && s.len() > q.len() {
+               let base = s[..s.len() - q.len()].to_string();
+            
+            // Validate base currency
+               if base.len() >= 2 && base.len() <= 10 && base.chars().all(|c| c.is_ascii_uppercase()) {
+                   println!("DEBUG: ✓ Parsed {} as {}/{}", symbol, base, q);
+                   return Some((base, q.to_string()));
+               }
+           }
+       }
+    
+    // If no match found, try to extract last 3-4 chars as quote
+       if s.len() > 6 {
+        // Try last 4 chars
+           let try4 = s.split_at(s.len() - 4);
+           if try4.1.chars().all(|c| c.is_ascii_alphabetic()) {
+               let base = try4.0.to_string();
+               let quote = try4.1.to_string();
+               if base.len() >= 2 && base.len() <= 10 {
+                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
+                   return Some((base, quote));
+               }
+           }
+        
+        // Try last 3 chars
+           let try3 = s.split_at(s.len() - 3);
+           if try3.1.chars().all(|c| c.is_ascii_alphabetic()) {
+               let base = try3.0.to_string();
+               let quote = try3.1.to_string();
+               if base.len() >= 2 && base.len() <= 10 {
+                   println!("DEBUG: ⚠ Fallback parsed {} as {}/{}", symbol, base, quote);
+                   return Some((base, quote));
+               }
+           }
+       }
+    
+       println!("DEBUG: ✗ Failed to parse {}", symbol);
+       None
     }
 
     fn build_graph(&self, tickers: &HashMap<String, (f64, f64, i64)>) -> (DiGraph<String, f64>, HashMap<String, NodeIndex>) {
