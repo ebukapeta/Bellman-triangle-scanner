@@ -348,6 +348,8 @@ impl BinanceCollector {
 
 // ==================== Bybit REST API Collector ====================
 
+// ==================== Bybit REST API Collector ====================
+
 pub struct BybitCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
     logs: Arc<Mutex<Vec<ScanLog>>>,
@@ -357,7 +359,7 @@ impl BybitCollector {
     pub fn new() -> Self {
         Self {
             collected_data: Arc::new(Mutex::new(HashMap::new())),
-n            logs: Arc::new(Mutex::new(Vec::new())),
+            logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -388,7 +390,6 @@ n            logs: Arc::new(Mutex::new(Vec::new())),
         let url = "https://api.bybit.com/v5/market/tickers";
         
         // Poll for data during the collection period
-        let mut pair_count = 0;
         let mut poll_count = 0;
         
         while Instant::now() < deadline {
@@ -423,7 +424,7 @@ n            logs: Arc::new(Mutex::new(Vec::new())),
                                 }
                             }
                             
-                            pair_count = data_clone.lock().await.len();
+                            let pair_count = data_clone.lock().await.len();
                             
                             // Log progress on first poll and every 5 polls
                             if poll_count == 1 || poll_count % 5 == 0 {
@@ -485,7 +486,7 @@ n            logs: Arc::new(Mutex::new(Vec::new())),
         self.logs.clone()
     }
 }
-                                                         
+                                                                    
 // ==================== KuCoin WebSocket Collector ====================
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
