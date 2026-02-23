@@ -364,7 +364,7 @@ impl BybitCollector {
     pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
         let start_time = Instant::now();
         let deadline = start_time + Duration::from_secs(duration_secs);
-
+        
         let mut data = self.collected_data.lock().await;
         data.clear();
         drop(data);
@@ -384,20 +384,30 @@ impl BybitCollector {
         let logs_clone = self.logs.clone();
 
         let ws_url = "wss://stream.bybit.com/v5/public/spot";
-
+        
         let connect_future = connect_async(ws_url);
         let connect_result = timeout(Duration::from_secs(10), connect_future).await;
-
+        
         match connect_result {
             Ok(Ok((ws_stream, _))) => {
                 let (mut write, mut read) = ws_stream.split();
-
-                // Subscribe to all tickers
+                
+                // Bybit v5 doesn't support wildcards - we need to subscribe to individual symbols
+                // First, let's try subscribing to a batch of major symbols
+                let major_symbols = vec![
+                    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", 
+                    "DOGEUSDT", "DOTUSDT", "LINKUSDT", "MATICUSDT", "AVAXUSDT",
+                    "UNIUSDT", "ATOMUSDT", "ALGOUSDT", "FILUSDT", "VETUSDT",
+                    "THETAUSDT", "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"
+                ];
+                
+                let args: Vec<String> = major_symbols.iter().map(|s| format!("tickers.{}", s)).collect();
+                
                 let subscribe_msg = serde_json::json!({
                     "op": "subscribe",
-                    "args": ["tickers.*"]
+                    "args": args
                 });
-
+                
                 if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
                     if let Err(e) = write.send(Message::Text(msg_str)).await {
                         let mut logs = logs_clone.lock().await;
@@ -418,7 +428,7 @@ impl BybitCollector {
                     add_log(&mut logs, ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
-                        message: "WebSocket connected and subscribed".to_string(),
+                        message: format!("WebSocket connected and subscribed to {} symbols", major_symbols.len()),
                         level: "success".to_string(),
                     });
                 }
@@ -440,7 +450,7 @@ impl BybitCollector {
                     match msg {
                         Ok(Message::Text(text)) => {
                             // Log first message sample for debugging
-                            if !sample_logged {
+                            if !sample_logged && !text.contains("success") {
                                 let mut logs = logs_clone.lock().await;
                                 add_log(&mut logs, ScanLog {
                                     timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -456,28 +466,27 @@ impl BybitCollector {
                                 if msg_data.get("success").is_some() || msg_data.get("op").is_some() {
                                     continue;
                                 }
-
+                                
                                 // Check for topic
                                 if let Some(topic) = msg_data.get("topic").and_then(|t| t.as_str()) {
                                     if topic.starts_with("tickers.") {
                                         if let Some(data) = msg_data.get("data") {
-                                            // Try to get symbol from data or topic
+                                            // Get symbol from data or extract from topic
                                             let symbol = data.get("symbol")
                                                 .and_then(|s| s.as_str())
                                                 .or_else(|| {
-                                                    // Extract from topic like "tickers.BTCUSDT"
-                                                    topic.split('.').nth(1)
+                                                    topic.strip_prefix("tickers.")
                                                 });
-
+                                            
                                             // Bybit sends prices as strings
                                             let bid = data.get("bid1Price")
                                                 .and_then(|b| b.as_str())
                                                 .and_then(|s| s.parse::<f64>().ok());
-
+                                            
                                             let ask = data.get("ask1Price")
                                                 .and_then(|a| a.as_str())
                                                 .and_then(|s| s.parse::<f64>().ok());
-
+                                            
                                             if let (Some(sym), Some(bid_price), Some(ask_price)) = (symbol, bid, ask) {
                                                 if parse_symbol(sym).is_some() {
                                                     let mut data_map = data_clone.lock().await;
@@ -562,8 +571,8 @@ impl BybitCollector {
     pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
         self.logs.clone()
     }
-}
-
+ }
+    
 // ==================== KuCoin WebSocket Collector ====================
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
