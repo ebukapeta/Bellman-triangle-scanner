@@ -347,6 +347,7 @@ impl BinanceCollector {
 }
 
 // ==================== Bybit WebSocket Collector ====================
+// ==================== Bybit WebSocket Collector ====================
 
 pub struct BybitCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
@@ -383,6 +384,7 @@ impl BybitCollector {
         let data_clone = self.collected_data.clone();
         let logs_clone = self.logs.clone();
 
+        // Try the correct Bybit spot WebSocket endpoint
         let ws_url = "wss://stream.bybit.com/v5/public/spot";
         
         let connect_future = connect_async(ws_url);
@@ -392,34 +394,22 @@ impl BybitCollector {
             Ok(Ok((ws_stream, _))) => {
                 let (mut write, mut read) = ws_stream.split();
                 
-                // Bybit v5 requires subscribing to individual symbols
-                // Subscribe to a batch of major trading pairs
-                let major_pairs = vec![
-                    "tickers.BTCUSDT", "tickers.ETHUSDT", "tickers.SOLUSDT", 
-                    "tickers.XRPUSDT", "tickers.ADAUSDT", "tickers.DOGEUSDT",
-                    "tickers.DOTUSDT", "tickers.LINKUSDT", "tickers.MATICUSDT",
-                    "tickers.AVAXUSDT", "tickers.UNIUSDT", "tickers.ATOMUSDT",
-                    "tickers.ALGOUSDT", "tickers.FILUSDT", "tickers.VETUSDT",
-                    "tickers.THETAUSDT", "tickers.TRXUSDT", "tickers.ETCUSDT",
-                    "tickers.LTCUSDT", "tickers.BCHUSDT", "tickers.XLMUSDT",
-                    "tickers.EOSUSDT", "tickers.AAVEUSDT", "tickers.SANDUSDT",
-                    "tickers.MANAUSDT", "tickers.AXSUSDT", "tickers.MKRUSDT",
-                    "tickers.COMPUSDT", "tickers.YFIUSDT", "tickers.SUSHIUSDT",
-                    "tickers.CRVUSDT", "tickers.1INCHUSDT", "tickers.GRTUSDT",
-                    "tickers.BATUSDT", "tickers.ENJUSDT", "tickers.CHZUSDT",
-                    "tickers.IMXUSDT", "tickers.RNDRUSDT", "tickers.ARBUSDT",
-                    "tickers.OPUSDT", "tickers.APTUSDT", "tickers.SUIUSDT",
-                    "tickers.SEIUSDT", "tickers.TONUSDT", "tickers.WLDUSDT"
-                ];
-                
+                // Subscribe to tickers channel - this should give us all spot tickers
                 let subscribe_msg = serde_json::json!({
                     "op": "subscribe",
-                    "args": major_pairs
+                    "args": ["tickers"]
                 });
                 
                 if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
+                    let mut logs = logs_clone.lock().await;
+                    add_log(&mut logs, ScanLog {
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        exchange: "bybit".to_string(),
+                        message: format!("Sending subscription: {}", msg_str),
+                        level: "debug".to_string(),
+                    });
+                    
                     if let Err(e) = write.send(Message::Text(msg_str)).await {
-                        let mut logs = logs_clone.lock().await;
                         add_log(&mut logs, ScanLog {
                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                             exchange: "bybit".to_string(),
@@ -429,16 +419,29 @@ impl BybitCollector {
                     }
                 }
 
-                // Wait for subscription confirmation
-                let mut subscribed = false;
-                let subscribe_deadline = Instant::now() + Duration::from_secs(3);
+                // Wait and check for any response (success or error)
+                let mut got_response = false;
+                let response_deadline = Instant::now() + Duration::from_secs(2);
                 
-                while Instant::now() < subscribe_deadline {
-                    match timeout(Duration::from_millis(500), read.next()).await {
+                while Instant::now() < response_deadline {
+                    match timeout(Duration::from_millis(300), read.next()).await {
                         Ok(Some(Ok(Message::Text(text)))) => {
+                            let mut logs = logs_clone.lock().await;
+                            add_log(&mut logs, ScanLog {
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                exchange: "bybit".to_string(),
+                                message: format!("Sub response: {}", &text[..text.len().min(200)]),
+                                level: "debug".to_string(),
+                            });
+                            
                             if let Ok(response) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if response.get("success").and_then(|s| s.as_bool()) == Some(true) {
-                                    subscribed = true;
+                                    got_response = true;
+                                    break;
+                                }
+                                if response.get("ret_msg").is_some() {
+                                    // Got an error message
+                                    got_response = true;
                                     break;
                                 }
                             }
@@ -449,18 +452,18 @@ impl BybitCollector {
 
                 {
                     let mut logs = logs_clone.lock().await;
-                    if subscribed {
+                    if got_response {
                         add_log(&mut logs, ScanLog {
                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                             exchange: "bybit".to_string(),
-                            message: format!("Subscribed to {} pairs", major_pairs.len()),
+                            message: "Subscription response received".to_string(),
                             level: "success".to_string(),
                         });
                     } else {
                         add_log(&mut logs, ScanLog {
                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                             exchange: "bybit".to_string(),
-                            message: "Subscribed (no confirmation)".to_string(),
+                            message: "No subscription response, continuing...".to_string(),
                             level: "warning".to_string(),
                         });
                     }
@@ -468,7 +471,7 @@ impl BybitCollector {
 
                 let mut pair_count = 0;
                 let mut last_activity = Instant::now();
-                let mut sample_logged = false;
+                let mut messages_received = 0;
 
                 // Main collection loop
                 loop {
@@ -476,22 +479,20 @@ impl BybitCollector {
                         break;
                     }
 
-                    let timeout_duration = Duration::from_millis(100);
-                    
-                    match timeout(timeout_duration, read.next()).await {
+                    match timeout(Duration::from_millis(200), read.next()).await {
                         Ok(Some(Ok(Message::Text(text)))) => {
+                            messages_received += 1;
                             last_activity = Instant::now();
                             
-                            // Log first non-subscription message for debugging
-                            if !sample_logged && !text.contains("success") && !text.contains("op") {
+                            // Log first few messages to see what we're getting
+                            if messages_received <= 3 {
                                 let mut logs = logs_clone.lock().await;
                                 add_log(&mut logs, ScanLog {
                                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                                     exchange: "bybit".to_string(),
-                                    message: format!("Sample: {}", &text[..text.len().min(150)]),
+                                    message: format!("Msg {}: {}", messages_received, &text[..text.len().min(100)]),
                                     level: "debug".to_string(),
                                 });
-                                sample_logged = true;
                             }
 
                             if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -500,16 +501,13 @@ impl BybitCollector {
                                     continue;
                                 }
                                 
-                                // Parse ticker data
+                                // Check for topic
                                 if let Some(topic) = msg_data.get("topic").and_then(|t| t.as_str()) {
-                                    if topic.starts_with("tickers.") {
+                                    // Accept both "tickers" and "tickers.SYMBOL" formats
+                                    if topic == "tickers" || topic.starts_with("tickers.") {
                                         if let Some(data) = msg_data.get("data") {
-                                            // Get symbol from data or extract from topic
-                                            let symbol = data.get("symbol")
-                                                .and_then(|s| s.as_str())
-                                                .or_else(|| topic.strip_prefix("tickers."));
+                                            let symbol = data.get("symbol").and_then(|s| s.as_str());
                                             
-                                            // Parse bid and ask prices (they come as strings)
                                             let bid = data.get("bid1Price")
                                                 .and_then(|b| b.as_str())
                                                 .and_then(|s| s.parse::<f64>().ok());
@@ -524,8 +522,7 @@ impl BybitCollector {
                                                     data_map.insert(sym.to_string(), (bid_price, ask_price, Utc::now().timestamp_millis()));
                                                     pair_count += 1;
                                                     
-                                                    // Log progress every 50 pairs
-                                                    if pair_count % 50 == 0 {
+                                                    if pair_count % 100 == 0 {
                                                         let mut logs = logs_clone.lock().await;
                                                         add_log(&mut logs, ScanLog {
                                                             timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -549,7 +546,7 @@ impl BybitCollector {
                             add_log(&mut logs, ScanLog {
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                                 exchange: "bybit".to_string(),
-                                message: "WebSocket closed".to_string(),
+                                message: "WebSocket closed by server".to_string(),
                                 level: "warning".to_string(),
                             });
                             break;
@@ -559,23 +556,22 @@ impl BybitCollector {
                             add_log(&mut logs, ScanLog {
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                                 exchange: "bybit".to_string(),
-                                message: format!("Error: {}", e),
+                                message: format!("WebSocket error: {}", e),
                                 level: "error".to_string(),
                             });
                             break;
                         }
                         Ok(None) => break,
                         Err(_) => {
-                            // Timeout - check if we should continue
-                            if last_activity.elapsed() > Duration::from_secs(10) {
+                            if last_activity.elapsed() > Duration::from_secs(5) {
                                 let mut logs = logs_clone.lock().await;
                                 add_log(&mut logs, ScanLog {
                                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                                     exchange: "bybit".to_string(),
-                                    message: "No activity, closing".to_string(),
+                                    message: "No data received for 5s".to_string(),
                                     level: "warning".to_string(),
                                 });
-                                break;
+                                // Don't break, just continue and check deadline
                             }
                             continue;
                         }
@@ -590,7 +586,7 @@ impl BybitCollector {
                     add_log(&mut logs, ScanLog {
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                         exchange: "bybit".to_string(),
-                        message: format!("Collection complete: {} pairs", pair_count),
+                        message: format!("Collection complete: {} pairs ({} msgs)", pair_count, messages_received),
                         level: "success".to_string(),
                     });
                 }
@@ -638,7 +634,7 @@ impl BybitCollector {
         self.logs.clone()
     }
 }
-    
+                    
 // ==================== KuCoin WebSocket Collector ====================
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
