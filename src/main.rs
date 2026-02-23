@@ -392,9 +392,8 @@ impl BybitCollector {
             Ok(Ok((ws_stream, _))) => {
                 let (mut write, mut read) = ws_stream.split();
                 
-                // Bybit REQUIRES specific symbol subscriptions - no wildcards allowed
-                // Subscribe to 50 major USDT pairs
-                let symbols = vec![
+                // Bybit limits to 10 args per subscription, so we subscribe in batches
+                let all_symbols = vec![
                     "tickers.BTCUSDT", "tickers.ETHUSDT", "tickers.SOLUSDT", "tickers.XRPUSDT",
                     "tickers.ADAUSDT", "tickers.DOGEUSDT", "tickers.DOTUSDT", "tickers.LINKUSDT",
                     "tickers.MATICUSDT", "tickers.AVAXUSDT", "tickers.UNIUSDT", "tickers.ATOMUSDT",
@@ -410,86 +409,42 @@ impl BybitCollector {
                     "tickers.GALAUSDT", "tickers.ROSEUSDT"
                 ];
                 
-                let subscribe_msg = serde_json::json!({
-                    "op": "subscribe",
-                    "args": symbols
-                });
-                
-                if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
-                    let mut logs = logs_clone.lock().await;
-                    add_log(&mut logs, ScanLog {
-                        timestamp: Local::now().format("%H:%M:%S").to_string(),
-                        exchange: "bybit".to_string(),
-                        message: format!("Subscribing to {} symbols", symbols.len()),
-                        level: "debug".to_string(),
+                // Subscribe in batches of 10
+                let mut total_subscribed = 0;
+                for chunk in all_symbols.chunks(10) {
+                    let args: Vec<String> = chunk.iter().map(|s| s.to_string()).collect();
+                    
+                    let subscribe_msg = serde_json::json!({
+                        "op": "subscribe",
+                        "args": args
                     });
                     
-                    if let Err(e) = write.send(Message::Text(msg_str)).await {
-                        add_log(&mut logs, ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "bybit".to_string(),
-                            message: format!("Failed to send: {}", e),
-                            level: "error".to_string(),
-                        });
-                    }
-                }
-
-                // Wait for subscription response
-                let mut subscribed = false;
-                let response_deadline = Instant::now() + Duration::from_secs(3);
-                
-                while Instant::now() < response_deadline {
-                    match timeout(Duration::from_millis(500), read.next()).await {
-                        Ok(Some(Ok(Message::Text(text)))) => {
+                    if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
+                        if let Err(e) = write.send(Message::Text(msg_str)).await {
                             let mut logs = logs_clone.lock().await;
                             add_log(&mut logs, ScanLog {
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                                 exchange: "bybit".to_string(),
-                                message: format!("Response: {}", &text[..text.len().min(150)]),
-                                level: "debug".to_string(),
+                                message: format!("Batch send failed: {}", e),
+                                level: "error".to_string(),
                             });
-                            
-                            if let Ok(response) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if response.get("success").and_then(|s| s.as_bool()) == Some(true) {
-                                    subscribed = true;
-                                    break;
-                                }
-                            }
+                            break;
                         }
-                        _ => break,
                     }
+                    
+                    // Wait a bit between batches
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    total_subscribed += args.len();
                 }
 
                 {
                     let mut logs = logs_clone.lock().await;
-                    if subscribed {
-                        add_log(&mut logs, ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "bybit".to_string(),
-                            message: format!("Subscribed to {} pairs", symbols.len()),
-                            level: "success".to_string(),
-                        });
-                    } else {
-                        add_log(&mut logs, ScanLog {
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            exchange: "bybit".to_string(),
-                            message: "Subscription failed or no confirmation".to_string(),
-                            level: "error".to_string(),
-                        });
-                        // Return early if subscription failed
-                        let final_data = self.collected_data.lock().await;
-                        let pairs_collected = final_data.len();
-                        drop(final_data);
-                        
-                        return ScanSummary {
-                            exchange: "bybit".to_string(),
-                            pairs_collected,
-                            paths_checked: 0,
-                            valid_triangles: 0,
-                            profitable_triangles: 0,
-                            collection_time_secs: start_time.elapsed().as_secs(),
-                        };
-                    }
+                    add_log(&mut logs, ScanLog {
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        exchange: "bybit".to_string(),
+                        message: format!("Subscribed to {} symbols in batches", total_subscribed),
+                        level: "success".to_string(),
+                    });
                 }
 
                 let mut pair_count = 0;
@@ -620,7 +575,7 @@ impl BybitCollector {
         self.logs.clone()
     }
 }
-                           
+                              
 // ==================== KuCoin WebSocket Collector ====================
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
