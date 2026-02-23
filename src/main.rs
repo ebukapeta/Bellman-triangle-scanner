@@ -346,8 +346,228 @@ impl BinanceCollector {
     }
 }
 
+// ==================== Bybit WebSocket Collector ====================
 
-                                  
+pub struct BybitCollector {
+    collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
+    logs: Arc<Mutex<Vec<ScanLog>>>,
+}
+
+impl BybitCollector {
+    pub fn new() -> Self {
+        Self {
+            collected_data: Arc::new(Mutex::new(HashMap::new())),
+            logs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub async fn start_collection(&self, duration_secs: u64) -> ScanSummary {
+        let start_time = Instant::now();
+        let deadline = start_time + Duration::from_secs(duration_secs);
+        
+        let mut data = self.collected_data.lock().await;
+        data.clear();
+        drop(data);
+
+        {
+            let mut logs = self.logs.lock().await;
+            logs.clear();
+            add_log(&mut logs, ScanLog {
+                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                exchange: "bybit".to_string(),
+                message: format!("Starting Bybit collection ({}s)", duration_secs),
+                level: "info".to_string(),
+            });
+        }
+
+        let data_clone = self.collected_data.clone();
+        let logs_clone = self.logs.clone();
+
+        let ws_url = "wss://stream.bybit.com/v5/public/spot";
+        
+        let connect_future = connect_async(ws_url);
+        let connect_result = timeout(Duration::from_secs(10), connect_future).await;
+        
+        match connect_result {
+            Ok(Ok((ws_stream, _))) => {
+                let (mut write, mut read) = ws_stream.split();
+                
+                // Subscribe to 10 major pairs
+                let symbols = vec![
+                    "tickers.BTCUSDT", "tickers.ETHUSDT", "tickers.SOLUSDT", 
+                    "tickers.XRPUSDT", "tickers.ADAUSDT", "tickers.DOGEUSDT",
+                    "tickers.DOTUSDT", "tickers.LINKUSDT", "tickers.MATICUSDT",
+                    "tickers.AVAXUSDT"
+                ];
+                
+                let subscribe_msg = serde_json::json!({
+                    "op": "subscribe",
+                    "args": symbols
+                });
+                
+                if let Ok(msg_str) = serde_json::to_string(&subscribe_msg) {
+                    if let Err(e) = write.send(Message::Text(msg_str)).await {
+                        let mut logs = logs_clone.lock().await;
+                        add_log(&mut logs, ScanLog {
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            exchange: "bybit".to_string(),
+                            message: format!("Send failed: {}", e),
+                            level: "error".to_string(),
+                        });
+                    }
+                }
+
+                // Wait for subscription responses
+                let response_deadline = Instant::now() + Duration::from_secs(2);
+                let mut response_count = 0;
+                
+                while Instant::now() < response_deadline {
+                    match timeout(Duration::from_millis(200), read.next()).await {
+                        Ok(Some(Ok(Message::Text(text)))) => {
+                            response_count += 1;
+                            // Just count responses, don't log all to avoid spam
+                        }
+                        _ => break,
+                    }
+                }
+
+                {
+                    let mut logs = logs_clone.lock().await;
+                    add_log(&mut logs, ScanLog {
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        exchange: "bybit".to_string(),
+                        message: format!("Subscribed, got {} responses", response_count),
+                        level: "success".to_string(),
+                    });
+                }
+
+                let mut pair_count = 0;
+                let mut msg_count = 0;
+                let mut last_activity = Instant::now();
+
+                // Collection loop
+                loop {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+
+                    match timeout(Duration::from_secs(1), read.next()).await {
+                        Ok(Some(Ok(Message::Text(text)))) => {
+                            msg_count += 1;
+                            last_activity = Instant::now();
+
+                            if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                                // Skip subscription responses
+                                if msg_data.get("success").is_some() || msg_data.get("op").is_some() {
+                                    continue;
+                                }
+                                
+                                // Parse ticker data
+                                if let Some(topic) = msg_data.get("topic").and_then(|t| t.as_str()) {
+                                    if topic.starts_with("tickers.") {
+                                        if let Some(data) = msg_data.get("data") {
+                                            let symbol = data.get("symbol").and_then(|s| s.as_str());
+                                            
+                                            // Bybit spot tickers only have lastPrice, not bid1Price/ask1Price
+                                            // Use lastPrice for both bid and ask (approximation)
+                                            let last_price = data.get("lastPrice")
+                                                .and_then(|p| p.as_str())
+                                                .and_then(|s| s.parse::<f64>().ok());
+                                            
+                                            if let (Some(sym), Some(price)) = (symbol, last_price) {
+                                                if parse_symbol(sym).is_some() {
+                                                    let mut data_map = data_clone.lock().await;
+                                                    // Use lastPrice as both bid and ask (with small spread)
+                                                    data_map.insert(sym.to_string(), (price, price, Utc::now().timestamp_millis()));
+                                                    pair_count += 1;
+                                                    
+                                                    // Log first few pairs
+                                                    if pair_count <= 5 {
+                                                        let mut logs = logs_clone.lock().await;
+                                                        add_log(&mut logs, ScanLog {
+                                                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                                            exchange: "bybit".to_string(),
+                                                            message: format!("Got {}: ${}", sym, price),
+                                                            level: "debug".to_string(),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Some(Ok(Message::Ping(data)))) => {
+                            let _ = write.send(Message::Pong(data)).await;
+                        }
+                        Ok(Some(Ok(Message::Close(_)))) => break,
+                        Ok(Some(Err(_))) => break,
+                        Ok(None) => break,
+                        Err(_) => {
+                            if last_activity.elapsed() > Duration::from_secs(5) {
+                                break;
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+
+                {
+                    let mut logs = logs_clone.lock().await;
+                    add_log(&mut logs, ScanLog {
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        exchange: "bybit".to_string(),
+                        message: format!("Collection complete: {} pairs", pair_count),
+                        level: "success".to_string(),
+                    });
+                }
+            }
+            Ok(Err(e)) => {
+                let mut logs = logs_clone.lock().await;
+                add_log(&mut logs, ScanLog {
+                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                    exchange: "bybit".to_string(),
+                    message: format!("Connection failed: {}", e),
+                    level: "error".to_string(),
+                });
+            }
+            Err(_) => {
+                let mut logs = logs_clone.lock().await;
+                add_log(&mut logs, ScanLog {
+                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                    exchange: "bybit".to_string(),
+                    message: "Connection timeout".to_string(),
+                    level: "error".to_string(),
+                });
+            }
+        }
+
+        let final_data = self.collected_data.lock().await;
+        let pairs_collected = final_data.len();
+        let elapsed = start_time.elapsed().as_secs();
+        drop(final_data);
+
+        ScanSummary {
+            exchange: "bybit".to_string(),
+            pairs_collected,
+            paths_checked: 0,
+            valid_triangles: 0,
+            profitable_triangles: 0,
+            collection_time_secs: elapsed,
+        }
+    }
+
+    pub fn get_data(&self) -> Arc<Mutex<HashMap<String, (f64, f64, i64)>>> {
+        self.collected_data.clone()
+    }
+
+    pub fn get_logs(&self) -> Arc<Mutex<Vec<ScanLog>>> {
+        self.logs.clone()
+    }
+}
+                                              
 // ==================== KuCoin WebSocket Collector ====================
 pub struct KuCoinCollector {
     collected_data: Arc<Mutex<HashMap<String, (f64, f64, i64)>>>,
