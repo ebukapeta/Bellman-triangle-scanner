@@ -905,15 +905,15 @@ impl ArbitrageDetector {
        let mut opportunities = Vec::new();
        let mut paths_checked = 0;
        let mut valid_triangles = 0;
-       let mut relaxable_edges_found = 0;  // DEBUG counter
+       let mut relaxable_edges_found = 0;
     
        let nodes: Vec<_> = graph.node_indices().collect();
     
-       println!("DEBUG: Checking {} nodes for arbitrage", nodes.len());  // DEBUG
+       println!("DEBUG: Checking {} nodes for arbitrage", nodes.len());
     
        for (idx, &start_node) in nodes.iter().enumerate() {
            if idx % 100 == 0 {
-               println!("DEBUG: Processing node {}/{}", idx, nodes.len());  // DEBUG
+               println!("DEBUG: Processing node {}/{}", idx, nodes.len());
            }
         
            match bellman_ford(&graph, start_node) {
@@ -921,7 +921,6 @@ impl ArbitrageDetector {
                    let distances = paths.distances;
                    let predecessors = paths.predecessors;
                 
-                // DEBUG: Count relaxable edges for this node
                    let mut node_relaxable = 0;
                    for edge in graph.edge_indices() {
                        let (u, v) = graph.edge_endpoints(edge).unwrap();
@@ -929,12 +928,10 @@ impl ArbitrageDetector {
                     
                        paths_checked += 1;
                     
-                    // Check for negative cycle (relaxation possible)
                        if distances[u.index()] + weight < distances[v.index()] - 1e-12 {
                            node_relaxable += 1;
                            relaxable_edges_found += 1;
                         
-                        // DEBUG: Log first few relaxable edges
                            if relaxable_edges_found <= 5 {
                                println!("DEBUG: Relaxable edge {}->{} (weight: {:.6}, dist_u: {:.6}, dist_v: {:.6})", 
                                    u.index(), v.index(), weight, distances[u.index()], distances[v.index()]);
@@ -945,7 +942,6 @@ impl ArbitrageDetector {
                                    valid_triangles += 1;
                                    let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
                                 
-                                // DEBUG: Log the cycle
                                    if valid_triangles <= 3 {
                                        println!("DEBUG: Found cycle {:?} with {} nodes", path, cycle.len());
                                    }
@@ -953,28 +949,26 @@ impl ArbitrageDetector {
                                    if path.first() == path.last() {
                                        let profit = self.calculate_real_profit(&path, tickers);
                                     
-                                    // DEBUG: Log profit calculation
                                        if valid_triangles <= 3 {
                                            println!("DEBUG: Profit for {:?} = {:.4}%", path, profit);
                                        }
                                     
                                        if profit > min_profit && profit < 50.0 && profit.is_finite() {
                                            let chance = self.calculate_execution_chance(&path);
-                                           let pair = path.join(" → ");
-                                           let slippage = (path.len() as f64 - 2.0) * 0.05;
+                                           let pair_str = path.join(" → ");
+                                        
+                                           println!("DEBUG: Added opportunity {} with profit {:.4}%", pair_str, profit);
                                         
                                            opportunities.push(ArbitrageOpportunity {
-                                               pair,
+                                               pair: pair_str,
                                                triangle: path.clone(),
                                                profit_margin_before: profit,
-                                               profit_margin_after: profit * (1.0 - slippage),
+                                               profit_margin_after: profit * (1.0 - (path.len() as f64 - 2.0) * 0.05),
                                                chance_of_executing: chance,
                                                timestamp: Utc::now().timestamp_millis(),
                                                exchange: "unknown".to_string(),
-                                               estimated_slippage: profit * slippage,
+                                               estimated_slippage: profit * (path.len() as f64 - 2.0) * 0.05,
                                            });
-                                        
-                                           println!("DEBUG: Added opportunity {} with profit {:.4}%", pair, profit);
                                        }
                                    }
                                }
@@ -982,21 +976,19 @@ impl ArbitrageDetector {
                        }
                    }
                 
-                // DEBUG: Log if node has relaxable edges
                    if node_relaxable > 0 && idx % 100 == 0 {
                        println!("DEBUG: Node {} has {} relaxable edges", idx, node_relaxable);
                    }
                }
                Err(_) => {
-                // Negative cycle detected during initial run
                    println!("DEBUG: Negative cycle in initial run at node {}", idx);
                }
            }
        }
     
-       println!("DEBUG: Total relaxable edges found: {}", relaxable_edges_found);  // DEBUG
-       println!("DEBUG: Valid triangles found: {}", valid_triangles);  // DEBUG
-       println!("DEBUG: Opportunities found: {}", opportunities.len());  // DEBUG
+       println!("DEBUG: Total relaxable edges found: {}", relaxable_edges_found);
+       println!("DEBUG: Valid triangles found: {}", valid_triangles);
+       println!("DEBUG: Opportunities found: {}", opportunities.len());
     
     // Deduplicate
        let mut seen = HashSet::new();
@@ -1022,8 +1014,7 @@ impl ArbitrageDetector {
        let profitable = opportunities.len();
        (opportunities, paths_checked, valid_triangles, profitable)
     }
-                    
-    
+        
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex, graph: &DiGraph<String, f64>) -> Option<Vec<NodeIndex>> {
         let mut path = Vec::new();
         let mut visited = HashSet::new();
