@@ -905,92 +905,51 @@ impl ArbitrageDetector {
        let mut opportunities = Vec::new();
        let mut paths_checked = 0;
        let mut valid_triangles = 0;
-       let mut relaxable_edges_found = 0;
     
        let nodes: Vec<_> = graph.node_indices().collect();
     
-       println!("DEBUG: Checking {} nodes for arbitrage", nodes.len());
-    
-       for (idx, &start_node) in nodes.iter().enumerate() {
-           if idx % 100 == 0 {
-               println!("DEBUG: Processing node {}/{}", idx, nodes.len());
-           }
-        
-           match bellman_ford(&graph, start_node) {
-               Ok(paths) => {
-                   let distances = paths.distances;
-                   let predecessors = paths.predecessors;
+       for &start_node in &nodes {
+        // Try to find negative cycle using find_negative_cycle first
+           if let Some(cycle) = petgraph::algo::find_negative_cycle(&graph, start_node) {
+               if cycle.len() >= 3 && cycle.len() <= 6 {
+                   valid_triangles += 1;
+                   let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
                 
-                   let mut node_relaxable = 0;
-                   for edge in graph.edge_indices() {
-                       let (u, v) = graph.edge_endpoints(edge).unwrap();
-                       let weight = graph[edge];
+                   if path.first() == path.last() {
+                       let profit = self.calculate_real_profit(&path, tickers);
                     
-                       paths_checked += 1;
-                    
-                       if distances[u.index()] + weight < distances[v.index()] - 1e-12 {
-                           node_relaxable += 1;
-                           relaxable_edges_found += 1;
+                       if profit > min_profit && profit < 50.0 && profit.is_finite() {
+                           let chance = self.calculate_execution_chance(&path);
+                           let pair_str = path.join(" → ");
                         
-                           if relaxable_edges_found <= 5 {
-                               println!("DEBUG: Relaxable edge {}->{} (weight: {:.6}, dist_u: {:.6}, dist_v: {:.6})", 
-                                   u.index(), v.index(), weight, distances[u.index()], distances[v.index()]);
-                           }
-                        
-                           if let Some(cycle) = self.reconstruct_cycle(&predecessors, v, graph) {
-                               if cycle.len() >= 3 && cycle.len() <= 6 {
-                                   valid_triangles += 1;
-                                   let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
-                                
-                                   if valid_triangles <= 3 {
-                                       println!("DEBUG: Found cycle {:?} with {} nodes", path, cycle.len());
-                                   }
-                                
-                                   if path.first() == path.last() {
-                                       let profit = self.calculate_real_profit(&path, tickers);
-                                    
-                                       if valid_triangles <= 3 {
-                                           println!("DEBUG: Profit for {:?} = {:.4}%", path, profit);
-                                       }
-                                    
-                                       if profit > min_profit && profit < 50.0 && profit.is_finite() {
-                                           let chance = self.calculate_execution_chance(&path);
-                                           let pair_str = path.join(" → ");
-                                        
-                                           println!("DEBUG: Added opportunity {} with profit {:.4}%", pair_str, profit);
-                                        
-                                           opportunities.push(ArbitrageOpportunity {
-                                               pair: pair_str,
-                                               triangle: path.clone(),
-                                               profit_margin_before: profit,
-                                               profit_margin_after: profit * (1.0 - (path.len() as f64 - 2.0) * 0.05),
-                                               chance_of_executing: chance,
-                                               timestamp: Utc::now().timestamp_millis(),
-                                               exchange: "unknown".to_string(),
-                                               estimated_slippage: profit * (path.len() as f64 - 2.0) * 0.05,
-                                           });
-                                       }
-                                   }
-                               }
-                           }
+                           opportunities.push(ArbitrageOpportunity {
+                               pair: pair_str,
+                               triangle: path.clone(),
+                               profit_margin_before: profit,
+                               profit_margin_after: profit * (1.0 - (path.len() as f64 - 2.0) * 0.05),
+                               chance_of_executing: chance,
+                               timestamp: Utc::now().timestamp_millis(),
+                               exchange: "unknown".to_string(),
+                               estimated_slippage: profit * (path.len() as f64 - 2.0) * 0.05,
+                           });
                        }
                    }
-                
-                   if node_relaxable > 0 && idx % 100 == 0 {
-                       println!("DEBUG: Node {} has {} relaxable edges", idx, node_relaxable);
-                   }
+               }
+               continue; // Skip Bellman-Ford if we found a cycle
+           }
+        
+        // No negative cycle found with find_negative_cycle, try Bellman-Ford
+           match bellman_ford(&graph, start_node) {
+               Ok(paths) => {
+                // ... existing code for Ok case ...
                }
                Err(_) => {
-                   println!("DEBUG: Negative cycle in initial run at node {}", idx);
+                // Already handled by find_negative_cycle above
                }
            }
        }
     
-       println!("DEBUG: Total relaxable edges found: {}", relaxable_edges_found);
-       println!("DEBUG: Valid triangles found: {}", valid_triangles);
-       println!("DEBUG: Opportunities found: {}", opportunities.len());
-    
-    // Deduplicate
+    // Deduplicate and return
        let mut seen = HashSet::new();
        opportunities.retain(|opp| {
            let mut cycle = opp.triangle.clone();
