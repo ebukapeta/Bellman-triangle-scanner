@@ -901,84 +901,129 @@ impl ArbitrageDetector {
     }
 
     fn find_opportunities(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
-                         tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
-        let mut opportunities = Vec::new();
-        let mut paths_checked = 0;
-        let mut valid_triangles = 0;
-
-        let nodes: Vec<_> = graph.node_indices().collect();
-
-        for &start_node in &nodes {
-            match bellman_ford(graph, start_node) {
-                Ok(paths) => {
-                    let distances = paths.distances;
-                    let predecessors = paths.predecessors;
-
-                    for edge in graph.edge_indices() {
-                        let (u, v) = graph.edge_endpoints(edge).unwrap();
-                        let weight = graph[edge];
-
-                        paths_checked += 1;
-
-                        if distances[u.index()] + weight < distances[v.index()] - 1e-12 {
-                            if let Some(cycle) = self.reconstruct_cycle(&predecessors, v, graph) {
-                                if cycle.len() >= 3 && cycle.len() <= 6 {
-                                    valid_triangles += 1;
-                                    let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
-
-                                    if path.first() == path.last() {
-                                        let profit = self.calculate_real_profit(&path, tickers);
-
-                                        if profit > min_profit && profit < 50.0 && profit.is_finite() {
-                                            let chance = self.calculate_execution_chance(&path);
-                                            let pair = path.join(" → ");
-                                            let slippage = (path.len() as f64 - 2.0) * 0.05;
-
-                                            opportunities.push(ArbitrageOpportunity {
-                                                pair,
-                                                triangle: path.clone(),
-                                                profit_margin_before: profit,
-                                                profit_margin_after: profit * (1.0 - slippage),
-                                                chance_of_executing: chance,
-                                                timestamp: Utc::now().timestamp_millis(),
-                                                exchange: "unknown".to_string(),
-                                                estimated_slippage: profit * slippage,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => {}
-            }
-        }
-
-        let mut seen = HashSet::new();
-        opportunities.retain(|opp| {
-            let mut cycle = opp.triangle.clone();
-            if let Some(min_pos) = cycle.iter().enumerate().take(cycle.len() - 1).min_by_key(|(_, x)| *x).map(|(i, _)| i) {
-                let mut canonical = cycle[min_pos..cycle.len() - 1].to_vec();
-                canonical.extend_from_slice(&cycle[0..min_pos]);
-                let key = canonical.join(",");
-                if seen.contains(&key) {
-                    false
-                } else {
-                    seen.insert(key);
-                    true
-                }
-            } else {
-                false
-            }
-        });
-
-        opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap_or(std::cmp::Ordering::Equal));
-
-        let profitable = opportunities.len();
-        (opportunities, paths_checked, valid_triangles, profitable)
+                     tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
+       let mut opportunities = Vec::new();
+       let mut paths_checked = 0;
+       let mut valid_triangles = 0;
+       let mut relaxable_edges_found = 0;  // DEBUG counter
+    
+       let nodes: Vec<_> = graph.node_indices().collect();
+    
+       println!("DEBUG: Checking {} nodes for arbitrage", nodes.len());  // DEBUG
+    
+       for (idx, &start_node) in nodes.iter().enumerate() {
+           if idx % 100 == 0 {
+               println!("DEBUG: Processing node {}/{}", idx, nodes.len());  // DEBUG
+           }
+        
+           match bellman_ford(&graph, start_node) {
+               Ok(paths) => {
+                   let distances = paths.distances;
+                   let predecessors = paths.predecessors;
+                
+                // DEBUG: Count relaxable edges for this node
+                   let mut node_relaxable = 0;
+                   for edge in graph.edge_indices() {
+                       let (u, v) = graph.edge_endpoints(edge).unwrap();
+                       let weight = graph[edge];
+                    
+                       paths_checked += 1;
+                    
+                    // Check for negative cycle (relaxation possible)
+                       if distances[u.index()] + weight < distances[v.index()] - 1e-12 {
+                           node_relaxable += 1;
+                           relaxable_edges_found += 1;
+                        
+                        // DEBUG: Log first few relaxable edges
+                           if relaxable_edges_found <= 5 {
+                               println!("DEBUG: Relaxable edge {}->{} (weight: {:.6}, dist_u: {:.6}, dist_v: {:.6})", 
+                                   u.index(), v.index(), weight, distances[u.index()], distances[v.index()]);
+                           }
+                        
+                           if let Some(cycle) = self.reconstruct_cycle(&predecessors, v, graph) {
+                               if cycle.len() >= 3 && cycle.len() <= 6 {
+                                   valid_triangles += 1;
+                                   let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
+                                
+                                // DEBUG: Log the cycle
+                                   if valid_triangles <= 3 {
+                                       println!("DEBUG: Found cycle {:?} with {} nodes", path, cycle.len());
+                                   }
+                                
+                                   if path.first() == path.last() {
+                                       let profit = self.calculate_real_profit(&path, tickers);
+                                    
+                                    // DEBUG: Log profit calculation
+                                       if valid_triangles <= 3 {
+                                           println!("DEBUG: Profit for {:?} = {:.4}%", path, profit);
+                                       }
+                                    
+                                       if profit > min_profit && profit < 50.0 && profit.is_finite() {
+                                           let chance = self.calculate_execution_chance(&path);
+                                           let pair = path.join(" → ");
+                                           let slippage = (path.len() as f64 - 2.0) * 0.05;
+                                        
+                                           opportunities.push(ArbitrageOpportunity {
+                                               pair,
+                                               triangle: path.clone(),
+                                               profit_margin_before: profit,
+                                               profit_margin_after: profit * (1.0 - slippage),
+                                               chance_of_executing: chance,
+                                               timestamp: Utc::now().timestamp_millis(),
+                                               exchange: "unknown".to_string(),
+                                               estimated_slippage: profit * slippage,
+                                           });
+                                        
+                                           println!("DEBUG: Added opportunity {} with profit {:.4}%", pair, profit);
+                                       }
+                                   }
+                               }
+                           }
+                       }
+                   }
+                
+                // DEBUG: Log if node has relaxable edges
+                   if node_relaxable > 0 && idx % 100 == 0 {
+                       println!("DEBUG: Node {} has {} relaxable edges", idx, node_relaxable);
+                   }
+               }
+               Err(_) => {
+                // Negative cycle detected during initial run
+                   println!("DEBUG: Negative cycle in initial run at node {}", idx);
+               }
+           }
+       }
+    
+       println!("DEBUG: Total relaxable edges found: {}", relaxable_edges_found);  // DEBUG
+       println!("DEBUG: Valid triangles found: {}", valid_triangles);  // DEBUG
+       println!("DEBUG: Opportunities found: {}", opportunities.len());  // DEBUG
+    
+    // Deduplicate
+       let mut seen = HashSet::new();
+       opportunities.retain(|opp| {
+           let mut cycle = opp.triangle.clone();
+           if let Some(min_pos) = cycle.iter().enumerate().take(cycle.len() - 1).min_by_key(|(_, x)| *x).map(|(i, _)| i) {
+               let mut canonical = cycle[min_pos..cycle.len() - 1].to_vec();
+               canonical.extend_from_slice(&cycle[0..min_pos]);
+               let key = canonical.join(",");
+               if seen.contains(&key) {
+                   false
+               } else {
+                   seen.insert(key);
+                   true
+               }
+           } else {
+               false
+           }
+       });
+    
+       opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap_or(std::cmp::Ordering::Equal));
+    
+       let profitable = opportunities.len();
+       (opportunities, paths_checked, valid_triangles, profitable)
     }
-
+                    
+    
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex, graph: &DiGraph<String, f64>) -> Option<Vec<NodeIndex>> {
         let mut path = Vec::new();
         let mut visited = HashSet::new();
