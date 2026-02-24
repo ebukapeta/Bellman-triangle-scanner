@@ -1067,7 +1067,7 @@ impl ArbitrageDetector {
        let (graph, node_indices) = self.build_graph(&tickers);
        println!("📈 Graph: {} nodes, {} edges", graph.node_count(), graph.edge_count());
 
-       // DEBUG: Check for edges
+    // DEBUG: Check for edges
        if graph.edge_count() == 0 {
            println!("❌ NO EDGES IN GRAPH - cannot find arbitrage");
            return (Vec::new(), summary, scan_logs);
@@ -1081,37 +1081,23 @@ impl ArbitrageDetector {
            println!("   {}: {} -> {} (weight: {:.6})", i, graph[u], graph[v], weight);
        }
 
-    // DEBUG: Check for cycles manually on a few nodes
-       println!("🔍 TESTING CYCLE DETECTION:");
-       let test_nodes: Vec<_> = graph.node_indices().take(3).collect();
-       for (i, &node) in test_nodes.iter().enumerate() {
-           println!("   Testing node {}: {}", i, graph[node]);
-           match bellman_ford(graph, node) {
-               Ok(paths) => {
-                   let neg_edges: Vec<_> = graph.edge_indices()
-                       .filter(|&e| {
-                           let (u, v) = graph.edge_endpoints(e).unwrap();
-                           let w = graph[e];
-                           paths.distances[u.index()] + w < paths.distances[v.index()] - 1e-12
-                       })
-                       .collect();
-                   println!("      Found {} relaxable edges", neg_edges.len());
-               }
-               Err(_) => println!("      Negative cycle detected in initial run!"),
-           }
-       }
+    // DEBUG: Show all currencies (nodes)
+       println!("📋 CURRENCIES ({}):", graph.node_count());
+       let currencies: Vec<_> = graph.node_indices().map(|i| graph[i].clone()).collect();
+       println!("   {}", currencies.join(", "));
 
        let (opportunities, paths_checked, valid_triangles, profitable) = 
            self.find_opportunities(&graph, &node_indices, &tickers, min_profit);
 
        println!("📊 RESULTS: {} paths checked, {} valid triangles, {} profitable", 
-                paths_checked, valid_triangles, profitable);
+             paths_checked, valid_triangles, profitable);
     
        if opportunities.is_empty() {
            println!("⚠️  NO OPPORTUNITIES FOUND - possible reasons:");
            println!("   1. No arbitrage exists in current market data");
            println!("   2. min_profit ({}) too high", min_profit);
            println!("   3. Cycle detection not working");
+           println!("   4. Graph not fully connected (check currencies above)");
        } else {
            println!("✅ Found {} opportunities", opportunities.len());
            for (i, opp) in opportunities.iter().take(3).enumerate() {
@@ -1130,9 +1116,8 @@ impl ArbitrageDetector {
        }
 
        (final_opportunities, final_summary, scan_logs)
-    }
-                        
-
+   }
+                
     pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
         -> ScanResponse {
 
