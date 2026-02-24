@@ -1014,70 +1014,124 @@ impl ArbitrageDetector {
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
-        -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
+       -> (Vec<ArbitrageOpportunity>, ScanSummary, Vec<ScanLog>) {
+    
+       println!("🔍 Scanning {} for {}s", exchange, duration_secs);
+    
+       let (summary, data, logs) = match exchange {
+           "binance" => {
+               let summary = self.binance_collector.start_collection(duration_secs).await;
+               (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
+           }
+           "bybit" => {
+               let summary = self.bybit_collector.start_collection(duration_secs).await;
+               (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
+           }
+           "kucoin" => {
+               let summary = self.kucoin_collector.start_collection(duration_secs).await;
+               (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
+           }
+           _ => return (Vec::new(), ScanSummary {
+               exchange: exchange.to_string(),
+               pairs_collected: 0,
+               paths_checked: 0,
+               valid_triangles: 0,
+               profitable_triangles: 0,
+               collection_time_secs: 0,
+           }, Vec::new())
+       };
 
-        println!("🔍 Scanning {} for {}s", exchange, duration_secs);
+       let tickers = {
+           let data_guard = data.lock().await;
+           data_guard.clone()
+       };
 
-        let (summary, data, logs) = match exchange {
-            "binance" => {
-                let summary = self.binance_collector.start_collection(duration_secs).await;
-                (summary, self.binance_collector.get_data(), self.binance_collector.get_logs())
-            }
-            "bybit" => {
-                let summary = self.bybit_collector.start_collection(duration_secs).await;
-                (summary, self.bybit_collector.get_data(), self.bybit_collector.get_logs())
-            }
-            "kucoin" => {
-                let summary = self.kucoin_collector.start_collection(duration_secs).await;
-                (summary, self.kucoin_collector.get_data(), self.kucoin_collector.get_logs())
-            }
-            _ => return (Vec::new(), ScanSummary {
-                exchange: exchange.to_string(),
-                pairs_collected: 0,
-                paths_checked: 0,
-                valid_triangles: 0,
-                profitable_triangles: 0,
-                collection_time_secs: 0,
-            }, Vec::new())
-        };
+       let scan_logs = {
+           let logs_guard = logs.lock().await;
+           logs_guard.clone()
+       };
 
-        let tickers = {
-            let data_guard = data.lock().await;
-            data_guard.clone()
-        };
+       println!("📊 {} pairs collected from {}", tickers.len(), exchange);
 
-        let scan_logs = {
-            let logs_guard = logs.lock().await;
-            logs_guard.clone()
-        };
+       if tickers.is_empty() {
+           println!("❌ NO TICKERS COLLECTED - aborting scan");
+           return (Vec::new(), summary, scan_logs);
+       }
 
-        println!("📊 {} pairs collected", tickers.len());
+    // DEBUG: Show sample of collected data
+       println!("📋 SAMPLE TICKERS:");
+       for (i, (symbol, (bid, ask, _ts))) in tickers.iter().take(5).enumerate() {
+           println!("   {}: {} bid={:.2} ask={:.2}", i, symbol, bid, ask);
+       }
 
-        if tickers.is_empty() {
-            return (Vec::new(), summary, scan_logs);
-        }
+       let (graph, node_indices) = self.build_graph(&tickers);
+       println!("📈 Graph: {} nodes, {} edges", graph.node_count(), graph.edge_count());
 
-        let (graph, node_indices) = self.build_graph(&tickers);
-        println!("📈 Graph: {} nodes, {} edges", graph.node_count(), graph.edge_count());
+       // DEBUG: Check for edges
+       if graph.edge_count() == 0 {
+           println!("❌ NO EDGES IN GRAPH - cannot find arbitrage");
+           return (Vec::new(), summary, scan_logs);
+       }
 
-        let (opportunities, paths_checked, valid_triangles, profitable) = 
-            self.find_opportunities(&graph, &node_indices, &tickers, min_profit);
+    // DEBUG: Show sample edges
+       println!("📋 SAMPLE EDGES:");
+       for (i, edge) in graph.edge_indices().take(3).enumerate() {
+           let (u, v) = graph.edge_endpoints(edge).unwrap();
+           let weight = graph[edge];
+           println!("   {}: {} -> {} (weight: {:.6})", i, graph[u], graph[v], weight);
+       }
 
-        println!("📊 Results: {} paths, {} valid triangles, {} profitable", 
-                 paths_checked, valid_triangles, profitable);
+    // DEBUG: Check for cycles manually on a few nodes
+       println!("🔍 TESTING CYCLE DETECTION:");
+       let test_nodes: Vec<_> = graph.node_indices().take(3).collect();
+       for (i, &node) in test_nodes.iter().enumerate() {
+           println!("   Testing node {}: {}", i, graph[node]);
+           match bellman_ford(graph, node) {
+               Ok(paths) => {
+                   let neg_edges: Vec<_> = graph.edge_indices()
+                       .filter(|&e| {
+                           let (u, v) = graph.edge_endpoints(e).unwrap();
+                           let w = graph[e];
+                           paths.distances[u.index()] + w < paths.distances[v.index()] - 1e-12
+                       })
+                       .collect();
+                   println!("      Found {} relaxable edges", neg_edges.len());
+               }
+               Err(_) => println!("      Negative cycle detected in initial run!"),
+           }
+       }
 
-        let mut final_summary = summary;
-        final_summary.paths_checked = paths_checked;
-        final_summary.valid_triangles = valid_triangles;
-        final_summary.profitable_triangles = profitable;
+       let (opportunities, paths_checked, valid_triangles, profitable) = 
+           self.find_opportunities(&graph, &node_indices, &tickers, min_profit);
 
-        let mut final_opportunities = opportunities;
-        for opp in &mut final_opportunities {
-            opp.exchange = exchange.to_string();
-        }
+       println!("📊 RESULTS: {} paths checked, {} valid triangles, {} profitable", 
+                paths_checked, valid_triangles, profitable);
+    
+       if opportunities.is_empty() {
+           println!("⚠️  NO OPPORTUNITIES FOUND - possible reasons:");
+           println!("   1. No arbitrage exists in current market data");
+           println!("   2. min_profit ({}) too high", min_profit);
+           println!("   3. Cycle detection not working");
+       } else {
+           println!("✅ Found {} opportunities", opportunities.len());
+           for (i, opp) in opportunities.iter().take(3).enumerate() {
+               println!("   {}: {} profit={:.2}%", i, opp.pair, opp.profit_margin_before);
+           }
+       }
 
-        (final_opportunities, final_summary, scan_logs)
+       let mut final_summary = summary;
+       final_summary.paths_checked = paths_checked;
+       final_summary.valid_triangles = valid_triangles;
+       final_summary.profitable_triangles = profitable;
+
+       let mut final_opportunities = opportunities;
+       for opp in &mut final_opportunities {
+           opp.exchange = exchange.to_string();
+       }
+
+       (final_opportunities, final_summary, scan_logs)
     }
+                        
 
     pub async fn scan_multiple_exchanges(&self, exchanges: Vec<String>, min_profit: f64, duration_secs: u64) 
         -> ScanResponse {
