@@ -923,58 +923,61 @@ impl ArbitrageDetector {
        let mut paths_checked = 0;
        let mut valid_triangles = 0;
     
-       let currencies: Vec<String> = node_indices.keys().cloned().collect();
+    // Get all nodes that have at least 2 edges (need both incoming and outgoing for triangle)
+       let nodes: Vec<NodeIndex> = graph.node_indices()
+           .filter(|&n| graph.edges(n).count() >= 1)
+           .collect();
     
-       // Enumerate all possible triangles (3-currency cycles)
-       for i in 0..currencies.len() {
-           for j in (i + 1)..currencies.len() {
-               for k in (j + 1)..currencies.len() {
-                   let a = &currencies[i];
-                   let b = &currencies[j];
-                   let c = &currencies[k];
+    // For each node, find neighbors and check triangles
+       for &a_idx in &nodes {
+           let a = &graph[a_idx];
+        
+        // Get all neighbors of A (currencies we can trade to from A)
+           let a_neighbors: Vec<NodeIndex> = graph.edges(a_idx)
+               .map(|e| e.target())
+               .collect();
+        
+           for &b_idx in &a_neighbors {
+               if b_idx == a_idx { continue; }
+               let b = &graph[b_idx];
+            
+            // Get all neighbors of B
+               let b_neighbors: Vec<NodeIndex> = graph.edges(b_idx)
+                   .map(|e| e.target())
+                   .collect();
+            
+               for &c_idx in &b_neighbors {
+                   if c_idx == a_idx || c_idx == b_idx { continue; }
+                   let c = &graph[c_idx];
                 
-                // Check both rotation directions: A->B->C->A and A->C->B->A
-                   let candidates = vec![
-                       vec![a.clone(), b.clone(), c.clone(), a.clone()],
-                       vec![a.clone(), c.clone(), b.clone(), a.clone()],
-                   ];
+                   paths_checked += 1;
                 
-                   for path in candidates {
-                       paths_checked += 1;
+                // Check if C can trade back to A (completing the triangle)
+                   let c_to_a = graph.find_edge(c_idx, a_idx);
+                   if c_to_a.is_none() {
+                       continue;
+                   }
+                
+                   valid_triangles += 1;
+                
+                // Found triangle A -> B -> C -> A
+                   let path = vec![a.clone(), b.clone(), c.clone(), a.clone()];
+                   let profit = self.calculate_real_profit(&path, tickers);
+                
+                   if profit > min_profit && profit < 50.0 && profit.is_finite() {
+                       let chance = self.calculate_execution_chance(&path);
+                       let pair_str = path.join(" → ");
                     
-                    // Verify all edges exist in graph
-                       let mut all_edges_exist = true;
-                       for idx in 0..path.len() - 1 {
-                           let from_idx = node_indices[&path[idx]];
-                           let to_idx = node_indices[&path[idx + 1]];
-                           if graph.find_edge(from_idx, to_idx).is_none() {
-                               all_edges_exist = false;
-                               break;
-                           }
-                       }
-                    
-                       if !all_edges_exist {
-                           continue;
-                       }
-                    
-                       valid_triangles += 1;
-                       let profit = self.calculate_real_profit(&path, tickers);
-                    
-                       if profit > min_profit && profit < 50.0 && profit.is_finite() {
-                           let chance = self.calculate_execution_chance(&path);
-                           let pair_str = path.join(" → ");
-                        
-                           opportunities.push(ArbitrageOpportunity {
-                               pair: pair_str,
-                               triangle: path.clone(),
-                               profit_margin_before: profit,
-                               profit_margin_after: profit * (1.0 - (path.len() as f64 - 2.0) * 0.05),
-                               chance_of_executing: chance,
-                               timestamp: Utc::now().timestamp_millis(),
-                               exchange: "unknown".to_string(),
-                               estimated_slippage: profit * (path.len() as f64 - 2.0) * 0.05,
-                           });
-                       }
+                       opportunities.push(ArbitrageOpportunity {
+                           pair: pair_str,
+                           triangle: path.clone(),
+                           profit_margin_before: profit,
+                           profit_margin_after: profit * (1.0 - (path.len() as f64 - 2.0) * 0.05),
+                           chance_of_executing: chance,
+                           timestamp: Utc::now().timestamp_millis(),
+                           exchange: "unknown".to_string(),
+                           estimated_slippage: profit * (path.len() as f64 - 2.0) * 0.05,
+                       });
                    }
                }
            }
@@ -1002,7 +1005,7 @@ impl ArbitrageDetector {
        let profitable = opportunities.len();
        (opportunities, paths_checked, valid_triangles, profitable)
     }
-                   
+                               
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex, graph: &DiGraph<String, f64>) -> Option<Vec<NodeIndex>> {
         let mut path = Vec::new();
         let mut visited = HashSet::new();
