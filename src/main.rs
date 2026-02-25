@@ -872,6 +872,10 @@ impl ArbitrageDetector {
            return -100.0;
        }
 
+    // DEBUG: Log path and sample tickers at start
+       println!("🔍 calculate_real_profit: path={:?}, tickers_count={}", path, tickers.len());
+       println!("   Sample tickers: {:?}", tickers.iter().take(3).map(|(k, v)| (k.clone(), v.0, v.1)).collect::<Vec<_>>());
+
        let mut amount = 1.0;
        let mut trade_count = 0;
 
@@ -896,13 +900,35 @@ impl ArbitrageDetector {
                }
            }
 
-           let rate = match found_rate {
-               Some(r) if r > 0.0 => r,
-               _ => return -100.0,
-           };
+        // DEBUG: Log when lookup fails
+           if found_rate.is_none() {
+               println!("❌ No ticker match for {} -> {}", from, to);
+            // Find tickers containing these currencies
+               let mut potential_matches = Vec::new();
+               for (sym, _) in tickers {
+                   let upper_sym = sym.to_uppercase();
+                   if upper_sym.contains(from) && upper_sym.contains(to) {
+                       potential_matches.push(sym.clone());
+                       if potential_matches.len() >= 3 { break; }
+                   }
+               }
+               if !potential_matches.is_empty() {
+                   println!("   Potential matches: {:?}", potential_matches);
+                   for sym in &potential_matches {
+                       if let Some((b, q)) = parse_symbol(sym) {
+                           println!("   {} parsed as base={}, quote={}", sym, b, q);
+                       } else {
+                           println!("   {} failed to parse", sym);
+                       }
+                   }
+               }
+               return -100.0;
+           }
 
+           let rate = found_rate.unwrap();
            let age_ms = Utc::now().timestamp_millis() - timestamp;
            if age_ms > 5000 {
+               println!("❌ Data too old for {} -> {}: {}ms", from, to, age_ms);
                return -100.0;
            }
         
@@ -914,9 +940,11 @@ impl ArbitrageDetector {
        let total_fees = (1.0_f64 - fee_rate).powi(trade_count as i32);
        let net_profit = (amount * total_fees - 1.0) * 100.0;
 
+       println!("✅ Profit calculated: {:.4}% (amount={:.6}, trades={})", net_profit, amount, trade_count);
+
        net_profit
     }
-                               
+                                  
     fn find_opportunities(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
                  tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
        let mut opportunities = Vec::new();
