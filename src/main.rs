@@ -910,13 +910,13 @@ impl ArbitrageDetector {
            trade_count += 1;
        }
 
-       let fee_rate = 0.001;
-       let total_fees = (1.0 - fee_rate).powi(trade_count as i32);
+       let fee_rate = 0.001_f64;
+       let total_fees = (1.0_f64 - fee_rate).powi(trade_count as i32);
        let net_profit = (amount * total_fees - 1.0) * 100.0;
 
        net_profit
     }
-                
+                               
     fn find_opportunities(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
                  tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
        let mut opportunities = Vec::new();
