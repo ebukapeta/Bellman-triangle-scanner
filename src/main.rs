@@ -868,50 +868,39 @@ impl ArbitrageDetector {
     }
 
     fn calculate_real_profit(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
-    // Path must be at least 3 nodes and start/end with same currency (cycle)
        if path.len() < 3 || path.first() != path.last() {
            return -100.0;
        }
 
-       let mut amount = 1.0;  // Start with 1 unit of starting currency
+       let mut amount = 1.0;
        let mut trade_count = 0;
 
        for i in 0..path.len() - 1 {
            let from = &path[i];
            let to = &path[i + 1];
 
-        // Find the ticker that allows this trade
-        // We need to match (from=base, to=quote) OR (from=quote, to=base)
-           let mut trade_rate = None;
+           let mut found_rate = None;
            let mut timestamp = 0i64;
 
            for (symbol, (bid, ask, ts)) in tickers {
                if let Some((base, quote)) = parse_symbol(symbol) {
-                
-                // Case 1: Selling 'from' (it's the base currency)
-                // Trade: from(base) -> to(quote), use BID price
                    if &base == from && &quote == to {
-                       trade_rate = Some(*bid);  // 1 base = bid quote
+                       found_rate = Some(*bid);
                        timestamp = *ts;
                        break;
-                   }
-                
-                // Case 2: Buying 'to' (it's the base currency)  
-                // Trade: from(quote) -> to(base), use ASK price
-                   if &base == to && &quote == from {
-                       trade_rate = Some(1.0 / *ask);  // 1 quote = 1/ask base
+                   } else if &base == to && &quote == from {
+                       found_rate = Some(1.0 / *ask);
                        timestamp = *ts;
                        break;
                    }
                }
            }
 
-           let rate = match trade_rate {
+           let rate = match found_rate {
                Some(r) if r > 0.0 => r,
-               _ => return -100.0,  // No valid market found for this trade
+               _ => return -100.0,
            };
 
-        // Check data freshness (5 second max age)
            let age_ms = Utc::now().timestamp_millis() - timestamp;
            if age_ms > 5000 {
                return -100.0;
@@ -921,14 +910,13 @@ impl ArbitrageDetector {
            trade_count += 1;
        }
 
-    // Apply trading fees (0.1% per trade, compounded)
        let fee_rate = 0.001;
-       let total_fees = (1.0 - fee_rate).powi(trade_count);
+       let total_fees = (1.0 - fee_rate).powi(trade_count as i32);
        let net_profit = (amount * total_fees - 1.0) * 100.0;
 
        net_profit
     }
-
+                
     fn find_opportunities(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
                  tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
        let mut opportunities = Vec::new();
