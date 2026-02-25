@@ -788,60 +788,75 @@ impl ArbitrageDetector {
     }
 
     fn build_graph(&self, tickers: &HashMap<String, (f64, f64, i64)>) -> (DiGraph<String, f64>, HashMap<String, NodeIndex>) {
-        let mut graph = DiGraph::<String, f64>::new();
-        let mut node_indices = HashMap::new();
-        let mut currencies = HashSet::new();
+       let mut graph = DiGraph::<String, f64>::new();
+       let mut node_indices = HashMap::new();
+       let mut currencies = HashSet::new();
 
-        for symbol in tickers.keys() {
-            if let Some((base, quote)) = parse_symbol(symbol) {
-                currencies.insert(base);
-                currencies.insert(quote);
-            }
-        }
+    // Step 1: Extract all unique currencies from ticker symbols
+    // Example: "BTCUSDT" -> currencies "BTC" and "USDT"
+       for symbol in tickers.keys() {
+           if let Some((base, quote)) = parse_symbol(symbol) {
+               currencies.insert(base);
+               currencies.insert(quote);
+           }
+       }
 
-        for currency in currencies {
-            let idx = graph.add_node(currency.clone());
-            node_indices.insert(currency, idx);
-        }
+    // Step 2: Create graph nodes for each currency
+    // Each node represents a currency (BTC, ETH, USDT, etc.)
+       for currency in currencies {
+           let idx = graph.add_node(currency.clone());
+           node_indices.insert(currency, idx);
+       }
 
-        let mut best_edges: HashMap<(NodeIndex, NodeIndex), f64> = HashMap::new();
+    // Step 3: Build directed edges between currencies
+    // Edge weight = -ln(exchange_rate)
+    // Negative weight = profitable path (Bellman-Ford detects negative cycles)
+       let mut best_edges: HashMap<(NodeIndex, NodeIndex), f64> = HashMap::new();
 
-        for (symbol, (bid, ask, _)) in tickers {
-            if let Some((base, quote)) = parse_symbol(symbol) {
-                if let (Some(&base_idx), Some(&quote_idx)) = (node_indices.get(&base), node_indices.get(&quote)) {
-                    if *bid > 0.0 {
-                        let weight = -bid.ln();
-                        let key = (base_idx, quote_idx);
-                        if let Some(&existing) = best_edges.get(&key) {
-                            if weight < existing {
-                                best_edges.insert(key, weight);
-                            }
-                        } else {
-                            best_edges.insert(key, weight);
-                        }
-                    }
-                    if *ask > 0.0 {
-                        let weight = -(1.0 / ask).ln();
-                        let key = (quote_idx, base_idx);
-                        if let Some(&existing) = best_edges.get(&key) {
-                            if weight < existing {
-                                best_edges.insert(key, weight);
-                            }
-                        } else {
-                            best_edges.insert(key, weight);
-                        }
-                    }
-                }
-            }
-        }
+       for (symbol, (bid, ask, _)) in tickers {
+        // Parse symbol to get base and quote currencies
+        // Example: "ETHUSDT" -> base="ETH", quote="USDT"
+           if let Some((base, quote)) = parse_symbol(symbol) {
+               if let (Some(&base_idx), Some(&quote_idx)) = (node_indices.get(&base), node_indices.get(&quote)) {
+                
+                // Edge 1: base -> quote (SELLING base at bid price)
+                // You give 1 base, you receive 'bid' amount of quote
+                // Exchange rate = bid (quote per base)
+                   if *bid > 0.0 {
+                       let rate = bid;
+                       let weight = -rate.ln();  // Negative log = lower weight = better rate
+                       let key = (base_idx, quote_idx);
+                    
+                    // Keep only the best (lowest) weight for each direction
+                       best_edges.entry(key)
+                           .and_modify(|e| *e = e.min(weight))
+                           .or_insert(weight);
+                   }
+                
+                // Edge 2: quote -> base (BUYING base at ask price)
+                // You give 'ask' amount of quote, you receive 1 base
+                // Exchange rate = 1/ask (base per quote)
+                   if *ask > 0.0 {
+                       let rate = 1.0 / ask;
+                       let weight = -rate.ln();
+                       let key = (quote_idx, base_idx);
+                    
+                       best_edges.entry(key)
+                           .and_modify(|e| *e = e.min(weight))
+                           .or_insert(weight);
+                   }
+               }
+           }
+       }
 
-        for ((from, to), weight) in best_edges {
-            graph.add_edge(from, to, weight);
-        }
+    // Step 4: Add all edges to graph
+       for ((from, to), weight) in best_edges {
+           graph.add_edge(from, to, weight);
+       }
 
-        (graph, node_indices)
+       (graph, node_indices)
     }
-
+                
     fn calculate_execution_chance(&self, path: &[String]) -> f64 {
         match path.len() {
             0..=2 => 0.0,
@@ -853,69 +868,108 @@ impl ArbitrageDetector {
     }
 
     fn calculate_real_profit(&self, path: &[String], tickers: &HashMap<String, (f64, f64, i64)>) -> f64 {
-        if path.len() < 3 || path.first() != path.last() {
-            return -100.0;
-        }
+    // Path must be at least 3 nodes and start/end with same currency (cycle)
+       if path.len() < 3 || path.first() != path.last() {
+           return -100.0;
+       }
 
-        let mut amount = 1.0;
-        let mut trade_count = 0;
+       let mut amount = 1.0;  // Start with 1 unit of starting currency
+       let mut trade_count = 0;
 
-        for i in 0..path.len() - 1 {
-            let from = &path[i];
-            let to = &path[i + 1];
+       for i in 0..path.len() - 1 {
+           let from = &path[i];
+           let to = &path[i + 1];
 
-            let pair = format!("{}{}", from, to);
-            if let Some((bid, _, timestamp)) = tickers.get(&pair) {
-                let age_ms = Utc::now().timestamp_millis() - timestamp;
-                if age_ms > 5000 {
-                    return -100.0;
-                }
-                if *bid > 0.0 {
-                    amount *= bid;
-                    trade_count += 1;
-                    continue;
-                }
-            }
+        // Find the ticker that allows this trade
+        // We need to match (from=base, to=quote) OR (from=quote, to=base)
+           let mut trade_rate = None;
+           let mut timestamp = 0i64;
 
-            let reverse_pair = format!("{}{}", to, from);
-            if let Some((_, ask, timestamp)) = tickers.get(&reverse_pair) {
-                let age_ms = Utc::now().timestamp_millis() - timestamp;
-                if age_ms > 5000 {
-                    return -100.0;
-                }
-                if *ask > 0.0 {
-                    amount *= 1.0 / ask;
-                    trade_count += 1;
-                    continue;
-                }
-            }
+           for (symbol, (bid, ask, ts)) in tickers {
+               if let Some((base, quote)) = parse_symbol(symbol) {
+                
+                // Case 1: Selling 'from' (it's the base currency)
+                // Trade: from(base) -> to(quote), use BID price
+                   if &base == from && &quote == to {
+                       trade_rate = Some(*bid);  // 1 base = bid quote
+                       timestamp = *ts;
+                       break;
+                   }
+                
+                // Case 2: Buying 'to' (it's the base currency)  
+                // Trade: from(quote) -> to(base), use ASK price
+                   if &base == to && &quote == from {
+                       trade_rate = Some(1.0 / *ask);  // 1 quote = 1/ask base
+                       timestamp = *ts;
+                       break;
+                   }
+               }
+           }
 
-            return -100.0;
-        }
+           let rate = match trade_rate {
+               Some(r) if r > 0.0 => r,
+               _ => return -100.0,  // No valid market found for this trade
+           };
 
-        let fee_rate = 0.001;
-        let total_fees = 1.0 - (trade_count as f64 * fee_rate);
-        let net_profit = (amount * total_fees - 1.0) * 100.0;
+        // Check data freshness (5 second max age)
+           let age_ms = Utc::now().timestamp_millis() - timestamp;
+           if age_ms > 5000 {
+               return -100.0;
+           }
+        
+           amount *= rate;
+           trade_count += 1;
+       }
 
-        net_profit
+    // Apply trading fees (0.1% per trade, compounded)
+       let fee_rate = 0.001;
+       let total_fees = (1.0 - fee_rate).powi(trade_count);
+       let net_profit = (amount * total_fees - 1.0) * 100.0;
+
+       net_profit
     }
 
     fn find_opportunities(&self, graph: &DiGraph<String, f64>, node_indices: &HashMap<String, NodeIndex>, 
-                     tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
+                 tickers: &HashMap<String, (f64, f64, i64)>, min_profit: f64) -> (Vec<ArbitrageOpportunity>, usize, usize, usize) {
        let mut opportunities = Vec::new();
        let mut paths_checked = 0;
        let mut valid_triangles = 0;
     
-       let nodes: Vec<_> = graph.node_indices().collect();
+       let currencies: Vec<String> = node_indices.keys().cloned().collect();
     
-       for &start_node in &nodes {
-        // Try to find negative cycle using find_negative_cycle first
-           if let Some(cycle) = petgraph::algo::find_negative_cycle(&graph, start_node) {
-               if cycle.len() >= 3 && cycle.len() <= 6 {
-                   valid_triangles += 1;
-                   let path: Vec<String> = cycle.iter().map(|&idx| graph[idx].clone()).collect();
+       // Enumerate all possible triangles (3-currency cycles)
+       for i in 0..currencies.len() {
+           for j in (i + 1)..currencies.len() {
+               for k in (j + 1)..currencies.len() {
+                   let a = &currencies[i];
+                   let b = &currencies[j];
+                   let c = &currencies[k];
                 
-                   if path.first() == path.last() {
+                // Check both rotation directions: A->B->C->A and A->C->B->A
+                   let candidates = vec![
+                       vec![a.clone(), b.clone(), c.clone(), a.clone()],
+                       vec![a.clone(), c.clone(), b.clone(), a.clone()],
+                   ];
+                
+                   for path in candidates {
+                       paths_checked += 1;
+                    
+                    // Verify all edges exist in graph
+                       let mut all_edges_exist = true;
+                       for idx in 0..path.len() - 1 {
+                           let from_idx = node_indices[&path[idx]];
+                           let to_idx = node_indices[&path[idx + 1]];
+                           if graph.find_edge(from_idx, to_idx).is_none() {
+                               all_edges_exist = false;
+                               break;
+                           }
+                       }
+                    
+                       if !all_edges_exist {
+                           continue;
+                       }
+                    
+                       valid_triangles += 1;
                        let profit = self.calculate_real_profit(&path, tickers);
                     
                        if profit > min_profit && profit < 50.0 && profit.is_finite() {
@@ -935,36 +989,23 @@ impl ArbitrageDetector {
                        }
                    }
                }
-               continue; // Skip Bellman-Ford if we found a cycle
-           }
-        
-        // No negative cycle found with find_negative_cycle, try Bellman-Ford
-           match bellman_ford(&graph, start_node) {
-               Ok(paths) => {
-                // ... existing code for Ok case ...
-               }
-               Err(_) => {
-                // Already handled by find_negative_cycle above
-               }
            }
        }
     
-    // Deduplicate and return
+    // Deduplicate by canonical rotation
        let mut seen = HashSet::new();
        opportunities.retain(|opp| {
            let mut cycle = opp.triangle.clone();
-           if let Some(min_pos) = cycle.iter().enumerate().take(cycle.len() - 1).min_by_key(|(_, x)| *x).map(|(i, _)| i) {
-               let mut canonical = cycle[min_pos..cycle.len() - 1].to_vec();
-               canonical.extend_from_slice(&cycle[0..min_pos]);
-               let key = canonical.join(",");
-               if seen.contains(&key) {
-                   false
-               } else {
-                   seen.insert(key);
-                   true
-               }
-           } else {
+           cycle.pop();
+           let min_pos = cycle.iter().enumerate().min_by_key(|(_, x)| *x).map(|(i, _)| i).unwrap_or(0);
+           let mut canonical = cycle[min_pos..].to_vec();
+           canonical.extend_from_slice(&cycle[0..min_pos]);
+           let key = canonical.join(",");
+           if seen.contains(&key) {
                false
+           } else {
+               seen.insert(key);
+               true
            }
        });
     
@@ -973,7 +1014,7 @@ impl ArbitrageDetector {
        let profitable = opportunities.len();
        (opportunities, paths_checked, valid_triangles, profitable)
     }
-        
+                   
     fn reconstruct_cycle(&self, predecessors: &[Option<NodeIndex>], start: NodeIndex, graph: &DiGraph<String, f64>) -> Option<Vec<NodeIndex>> {
         let mut path = Vec::new();
         let mut visited = HashSet::new();
