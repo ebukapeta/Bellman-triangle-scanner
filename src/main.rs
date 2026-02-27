@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant, timeout};
 use chrono::{Utc, Local};
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
