@@ -816,16 +816,83 @@ impl ArbitrageDetector {
         (graph, node_indices)
     }
 
-    fn calculate_execution_chance(&self, path: &[String]) -> f64 {
-        match path.len() {
-            0..=2 => 0.0,
-            3 => 85.0,
-            4 => 75.0,
-            5 => 60.0,
-            _ => 50.0,
-        }
-    }
+    fn calculate_execution_chance(&self, path: &[String], tickers: &HashMap<String, (f64, i64)>) -> f64 {
+       if path.len() < 3 {
+           return 0.0;
+       }
 
+       let mut total_liquidity_score = 0.0;
+       let mut data_freshness_score = 0.0;
+       let mut trade_count = 0;
+
+       for i in 0..path.len() - 1 {
+           let from = &path[i];
+           let to = &path[i + 1];
+
+        // Find the ticker and analyze it
+           for (symbol, (price, timestamp)) in tickers {
+               if let Some((base, quote)) = parse_symbol(symbol) {
+                   let matches = (&base == from && &quote == to) || (&base == to && &quote == from);
+                
+                   if matches {
+                       let age_ms = Utc::now().timestamp_millis() - timestamp;
+                    
+                    // Data freshness: newer data = higher chance
+                    // 0-1s: 100%, 1-5s: 80%, 5-10s: 50%, 10s+: 20%
+                       let freshness = if age_ms < 1000 {
+                           100.0
+                       } else if age_ms < 5000 {
+                           80.0
+                       } else if age_ms < 10000 {
+                           50.0
+                       } else {
+                           20.0
+                       };
+                       data_freshness_score += freshness;
+
+                    // Price stability: very low/high prices = lower liquidity = lower chance
+                    // Normalize price to 0-100 score (higher price = more established = better)
+                       let price_score = if *price >= 1.0 {
+                           100.0
+                       } else if *price >= 0.01 {
+                           80.0
+                       } else if *price >= 0.0001 {
+                           60.0
+                       } else {
+                           40.0
+                       };
+                       total_liquidity_score += price_score;
+
+                       trade_count += 1;
+                       break;
+                   }
+               }
+           }
+       }
+
+       if trade_count == 0 {
+           return 0.0;
+       }
+
+    // Average the scores
+       let avg_freshness = data_freshness_score / trade_count as f64;
+       let avg_liquidity = total_liquidity_score / trade_count as f64;
+
+    // Path length penalty: more trades = more points of failure
+       let path_penalty = match path.len() {
+           4 => 0.0,   // Triangle: no penalty
+           5 => 10.0,  // Quad: 10% penalty
+           6 => 20.0,  // 5-trade path: 20% penalty
+           _ => 30.0,  // Longer paths: 30% penalty
+       };
+
+    // Calculate final chance
+       let raw_chance = (avg_freshness * 0.6 + avg_liquidity * 0.4) - path_penalty;
+    
+    // Clamp between 5% and 95%
+       raw_chance.clamp(5.0, 95.0)
+    }
+                
     fn calculate_real_profit(&self, path: &[String], tickers: &HashMap<String, (f64, i64)>) -> f64 {
         if path.len() < 3 || path.first() != path.last() {
             return -100.0;
@@ -910,7 +977,7 @@ impl ArbitrageDetector {
                     let profit = self.calculate_real_profit(&path, tickers);
 
                     if profit > min_profit && profit < 50.0 && profit.is_finite() {
-                        let chance = self.calculate_execution_chance(&path);
+                        let chance = self.calculate_execution_chance(&path, tickers);
                         let pair_str = path.join(" → ");
 
                         opportunities.push(ArbitrageOpportunity {
