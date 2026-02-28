@@ -1057,7 +1057,8 @@ impl ArbitrageDetector {
 
         opportunities.sort_by(|a, b| b.profit_margin_before.partial_cmp(&a.profit_margin_before).unwrap_or(std::cmp::Ordering::Equal));
 
-        (opportunities, paths_checked, valid_triangles, opportunities.len())
+        let profitable_count = opportunities.len();
+        (opportunities, paths_checked, valid_triangles, profitable_count)
     }
 
     pub async fn scan_exchange(&self, exchange: &str, min_profit: f64, duration_secs: u64) 
